@@ -1,0 +1,49 @@
+<div class="card">
+  <h3><a href="{{ article.url }}" target="_blank" rel="noopener">{{ article.title }}</a></h3>
+  <div class="meta">
+    <span class="outlet-mark">
+      <img src="/outlet-logo/{{ article.outlet | urlencode }}" alt="" height="22"
+           onerror="this.remove()">
+      <span>{{ article.outlet }}</span>
+    </span>
+    <span>{{ article.published_at }}</span>
+    {% if article.importance_score %}
+      {% set imp = article.importance_score %}
+      <span class="badge {{ 'imp-critical' if imp >= 9 else 'imp-high' if imp >= 7 else 'imp-med' if imp >= 4 else 'imp-low' }}">importance {{ imp }}/10</span>
+    {% endif %}
+    {% if article.scope %}<span class="badge scope-{{ article.scope }}">{{ article.scope }}</span>{% endif %}
+    {% for cat in article.categories_list %}<span class="badge cat-{{ cat.split('.')[0] }}">{{ cat }}</span>{% endfor %}
+  </div>
+  {% if article.summary %}
+  <div class="analysis">
+    <span class="label">Analysis</span>
+    <p><strong>What happened:</strong> {{ article.summary }}</p>
+    {% if article.interpretation %}<p><strong>Why it matters:</strong> {{ article.interpretation }}</p>{% endif %}
+    {% if article.narrative_critique %}<p><strong>Framing:</strong> {{ article.narrative_critique }}</p>{% endif %}
+  </div>
+  {% endif %}
+
+  {#
+    Human commentary, deliberately after the model's analysis and visually
+    distinct from it. The two were produced independently -- the model read
+    only the article -- so agreement is corroboration and disagreement is the
+    interesting part. Neither is labelled as correct.
+  #}
+  {% set discussion = comments.get(article.id) if comments else None %}
+  {% if discussion %}
+  <div class="discussion">
+    <span class="label">
+      What readers said
+      <a href="{{ discussion.thread_url }}" target="_blank" rel="noopener">
+        {{ discussion.comment_count }} comments on Hacker News{% if discussion.points %} · {{ discussion.points }} points{% endif %}
+      </a>
+    </span>
+    {% for comment in discussion.comments %}
+    <div class="discussion-comment">
+      <a class="discussion-author" href="{{ comment.permalink }}" target="_blank" rel="noopener">{{ comment.author }}</a>
+      <p>{{ comment.text }}</p>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>

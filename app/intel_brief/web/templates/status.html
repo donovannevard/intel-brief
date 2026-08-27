@@ -1,0 +1,271 @@
+{% extends "base.html" %}
+{% block title %}Status - Intel Brief{% endblock %}
+{% block content %}
+<h2 class="section-title">Pipeline Status</h2>
+
+{# Which of the three AI states is in effect, stated plainly: "I turned it
+   off" and "it is broken" must never look the same. #}
+{% set ai_mode, ai_detail = ai_status() %}
+<div class="card">
+  <h3>Interpretation layer</h3>
+  {% if ai_mode == 'enabled' %}
+  <p class="day-panel-note status-ok" style="margin:0;">
+    <strong>On.</strong> Articles are summarised and framed, the morning brief is
+    assembled, and the markets tabs carry a verified narrative.
+    <span style="color:var(--muted);">{{ ai_detail }}</span>
+  </p>
+  {% elif ai_mode == 'degraded' %}
+  <p class="day-panel-note status-fail" style="margin:0;">
+    <strong>Configured, but not answering.</strong> {{ ai_detail }}.<br>
+    Collection, the archive and the markets figures carry on as normal. No
+    article is marked failed while the endpoint is unreachable — the queue
+    waits and is picked up whenever it returns.
+  </p>
+  {% else %}
+  <p class="day-panel-note" style="margin:0;">
+    <strong>Off.</strong> Running as a reader and archive: headlines, outlets,
+    full-text search and computed market figures, with no interpretation.<br>
+    <span style="color:var(--muted);">Set <code>LLM_BASE_URL</code> to any
+    OpenAI-compatible endpoint to switch it on.</span>
+  </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Today's run</h3>
+  {#
+    Catch-up covers a missed run on the SAME day only. A previous day that was
+    missed entirely cannot be rebuilt -- discover() reads what the feeds serve
+    now, and RSS keeps no history -- so this panel talks about today and never
+    offers to make up a backlog it couldn't deliver.
+  #}
+  {% if todays_run.done %}
+  <p class="day-panel-note status-ok" style="margin:0;">
+    Completed at {{ todays_run.at }}. Scheduled for {{ scheduled_time }} daily; if the
+    machine is off then, it runs on the next start-up instead.
+  </p>
+  {% elif pipeline_running %}
+  <p class="day-panel-note" style="margin:0;">Running now — progress is in the banner above.</p>
+  {% else %}
+  <p class="day-panel-note" style="margin:0 0 10px;">
+    Hasn't completed today. It's scheduled for {{ scheduled_time }} and catches up
+    automatically on the next start-up — this button is for when that didn't happen
+    or the run failed.
+  </p>
+  {% if not backfill_running %}
+  <form method="post" action="/control/run-now" style="margin:0;">
+    <button type="submit" class="control-btn resume">Run today's pipeline now</button>
+  </form>
+  {% endif %}
+  {% endif %}
+  <p class="day-panel-note" style="margin:10px 0 0;font-size:11.5px;">
+    A day missed entirely can't be recovered: collection reads the live feeds, which
+    keep no history. Days already collected can be processed from the chart below.
+  </p>
+</div>
+
+<div class="card">
+  <h3>Archive coverage since {{ archive.archive_start | pretty_date }}</h3>
+  <form method="get" action="/status" class="range-filter">
+    <label for="start">From</label>
+    <input type="date" id="start" name="start" value="{{ range_start }}"
+           min="{{ archive.archive_start }}" max="{{ archive.today }}">
+    <label for="end">to</label>
+    <input type="date" id="end" name="end" value="{{ range_end }}"
+           min="{{ archive.archive_start }}" max="{{ archive.today }}">
+    {% if selected_day %}<input type="hidden" name="day" value="{{ selected_day.day }}">{% endif %}
+    <button type="submit" class="control-btn">Apply</button>
+    {% if range_start != archive.archive_start or range_end != archive.today %}
+    <a class="outlet-clear" href="/status">Whole archive</a>
+    {% endif %}
+  </form>
+
+  <div class="archive-summary">
+    <span><strong>{{ archive.analysed }}</strong> analysed</span>
+    <span><strong>{{ archive.pending }}</strong> available for processing</span>
+    <span><strong>{{ archive.days }}</strong> days</span>
+    {% if archive.days_with_gaps %}
+    <span class="status-fail" title="No articles were collected at all on these days. RSS only serves what is currently live, so they cannot be recovered.">
+      {{ archive.days_with_gaps }} day{{ 's' if archive.days_with_gaps != 1 }} unrecoverable
+    </span>
+    {% endif %}
+  </div>
+
+  {#
+    Each bar is one day: the filled portion is analysed, the rest is collected
+    but still waiting. A day with nothing collected is drawn as an empty slot
+    with a marker, because that is a hole in the archive rather than work
+    outstanding -- no amount of processing brings an un-fetched day back.
+  #}
+  <div class="coverage-chart">
+    {% for d in coverage %}
+    {% set height = ((d.collected / coverage_max) * 100) if coverage_max else 0 %}
+    {% set done = ((d.analysed / d.collected) * 100) if d.collected else 0 %}
+    <a class="cov-day{{ ' cov-gap' if d.unrecoverable }}{{ ' cov-selected' if selected_day and selected_day.day == d.day }}"
+       href="/status?start={{ range_start }}&amp;end={{ range_end }}&amp;day={{ d.day }}"
+       title="{{ d.day }} — {{ d.analysed }} analysed of {{ d.collected }} collected{% if d.pending %}, {{ d.pending }} still available{% endif %}{% if d.unrecoverable %} — nothing collected, unrecoverable{% endif %}">
+      <span class="cov-bar" style="height: {{ '%.1f'|format(height) }}%">
+        <span class="cov-done" style="height: {{ '%.1f'|format(done) }}%"></span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  <div class="coverage-axis">
+    <span>{{ coverage[0].day if coverage }}</span>
+    <span class="cov-key"><i class="k-done"></i> analysed <i class="k-pending"></i> waiting <i class="k-gap"></i> not collected</span>
+    <span>{{ coverage[-1].day if coverage }}</span>
+  </div>
+
+  {% if selected_day %}
+  <div class="day-panel">
+    <div class="day-panel-head">
+      <strong>{{ selected_day.day }}</strong>
+      <a class="outlet-clear" href="/status?start={{ range_start }}&amp;end={{ range_end }}">clear selection</a>
+    </div>
+    {% if selected_day.unrecoverable %}
+    <p class="day-panel-note status-fail">
+      Nothing was collected on this day, so there is nothing to process. RSS only serves
+      what is currently live, so this day cannot be recovered.
+    </p>
+    {% elif selected_day.pending %}
+    <p class="day-panel-note">
+      {{ selected_day.analysed }} of {{ selected_day.collected }} analysed —
+      <strong>{{ selected_day.pending }}</strong> still to process,
+      about {{ selected_day.estimated_minutes }} minutes at the current rate.
+    </p>
+    {% if not backfill_running and not pipeline_running %}
+    <form method="post" action="/control/backfill?day={{ selected_day.day }}&amp;whole_day=1" style="margin:0;">
+      <button type="submit" class="control-btn resume">
+        {% if selected_day.exceeds_one_run %}Process what fits in {{ selected_day.max_run_minutes // 60 }} hours{% else %}Run processing for this day{% endif %}
+      </button>
+    </form>
+    {% if selected_day.exceeds_one_run %}
+    <p class="day-panel-note" style="margin:8px 0 0;">
+      This day needs more than the {{ selected_day.max_run_minutes // 60 }}-hour limit for a single run,
+      so it will get through most of it and leave the rest for another go.
+    </p>
+    {% endif %}
+    {% endif %}
+    {% else %}
+    <p class="day-panel-note status-ok">
+      Fully processed — all {{ selected_day.analysed }} articles collected that day have been analysed.
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="backfill-controls">
+    {% if backfill_running %}
+    <span class="status-ok">Catch-up running — progress is in the banner above.</span>
+    {% elif pipeline_running %}
+    <span style="color: var(--muted);">
+      Today's pipeline is running. Catch-up waits for it — it's the low-priority job,
+      and both want the same GPU.
+    </span>
+    {% elif archive.pending %}
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:11.5px;color:var(--muted);">Catch up the oldest day for</span>
+      {% for mins in [30, 120, 360] %}
+      <form method="post" action="/control/backfill?minutes={{ mins }}" style="margin:0;">
+        <button type="submit" class="control-btn">
+          {{ (mins ~ ' min') if mins < 60 else ((mins // 60) ~ ' hours') }}
+          <span style="opacity:.6">≈{{ (mins * 60 / seconds_per_article) | int }} articles</span>
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+    <p style="font-size:11.5px;color:var(--muted);margin:8px 0 0;">
+      Oldest first, at the observed rate of {{ seconds_per_article }}s per article.
+      Stops early if you hit Pause or if something else starts using the GPU, and picks
+      up where it left off next time. At this rate the {{ archive.pending }} waiting
+      articles are about {{ (archive.pending * seconds_per_article / 3600) | round | int }} hours of processing in total.
+    </p>
+    {% else %}
+    <span class="status-ok">Every collected article since {{ archive.archive_start }} has been analysed.</span>
+    {% endif %}
+  </div>
+
+  {% if archive.pending %}
+  <table style="margin-top:14px;">
+    <tr><th>Day</th><th>Collected</th><th>Analysed</th><th>Waiting</th><th></th></tr>
+    {% for d in coverage if d.pending %}
+    <tr>
+      <td>{{ d.day }}</td><td>{{ d.collected }}</td><td>{{ d.analysed }}</td><td>{{ d.pending }}</td>
+      <td>
+        {% if not backfill_running %}
+        <form method="post" action="/control/backfill?day={{ d.day }}&amp;minutes=120" style="margin:0;">
+          <button type="submit" class="control-btn" style="padding:2px 8px;font-size:11px;">Catch up</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Recent runs</h3>
+  <table>
+    <tr><th>Stage</th><th>Started</th><th>Duration</th><th>Result</th><th>Stats</th></tr>
+    {% for run in runs %}
+    <tr>
+      <td>{{ run.stage }}</td>
+      <td>{{ run.started_at }}</td>
+      <td>{{ run.stats_dict.get('duration_seconds', '-') }}s</td>
+      <td class="{{ 'status-ok' if run.ok else 'status-fail' }}">{{ 'ok' if run.ok else 'FAILED' }}</td>
+      <td>{{ run.stats }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Feed health</h3>
+  <table>
+    <tr><th>Feed</th><th>Last polled</th><th>Consecutive failures</th></tr>
+    {% for feed in feeds %}
+    <tr>
+      <td>{{ feed.name }}</td>
+      <td>{{ feed.last_polled_at or 'never' }}</td>
+      <td class="{{ 'status-fail' if feed.consecutive_failures >= 3 else '' }}">{{ feed.consecutive_failures }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Market data ingest</h3>
+  {% if market_health %}
+  <table>
+    <tr><th>Series</th><th>Source</th><th>Health</th><th>Data age</th><th>Rows</th><th>Latest</th><th>Last fetched</th></tr>
+    {% for m in market_health %}
+    <tr>
+      <td>{{ m.series_id }}</td>
+      <td>{{ m.source }}</td>
+      <td class="{{ 'status-ok' if m.health == 'ok' else 'status-fail' }}"
+          {% if m.last_error %}title="{{ m.last_error }}"{% endif %}>{{ m.health }}</td>
+      <td>{{ (m.days_behind ~ 'd') if m.days_behind is not none else '-' }}</td>
+      <td>{{ m.stored_rows }}</td>
+      <td>{{ m.latest_date or '-' }}</td>
+      <td>{{ m.last_fetched[:16] if m.last_fetched else '-' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p style="font-size: 12.5px; color: var(--muted);">
+    No market data collected yet — the first ingest run will populate this.
+  </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Article status counts</h3>
+  <table>
+    <tr><th>Status</th><th>Count</th></tr>
+    {% for status_row in status_counts %}
+    <tr><td>{{ status_row.status }}</td><td>{{ status_row.n }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

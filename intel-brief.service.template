@@ -1,0 +1,32 @@
+[Unit]
+Description=Intel Brief (news reader, archive and markets dashboard)
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+Environment=HOME=__PREFIX__
+Environment=PATH=__PREFIX__/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=__PREFIX__/app
+ExecStart=__PREFIX__/.local/bin/uv run python3 main.py
+Restart=always
+RestartSec=10
+Nice=5
+
+# Least-privilege hardening. ProtectHome stays true because the deployment
+# lives outside /home -- that is the whole reason install.sh defaults to /srv
+# rather than running from a checkout in someone's home directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__PREFIX__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

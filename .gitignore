@@ -1,0 +1,21 @@
+# The data root. Everything the service accumulates lives here: the article
+# archive (irreplaceable -- RSS serves only what is currently live, so a day
+# not collected is gone) and the price cache (regenerable from the providers).
+/data/
+
+# Python
+__pycache__/
+*.py[oc]
+.venv/
+build/
+dist/
+wheels/
+*.egg-info
+
+# Secrets
+.env
+
+# Generated per-deployment from app/feeds.example.yaml + LOCAL_PLACES (see
+# uk_regions.py). It names the region someone follows, so it is theirs, not
+# the repo's.
+/app/feeds.yaml

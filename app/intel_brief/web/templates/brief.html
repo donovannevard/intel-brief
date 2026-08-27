@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Today's Brief - Intel Brief{% endblock %}
+{% block content %}
+<h2 class="section-title">Morning Brief -- {{ brief_date }}</h2>
+{% include "_outlet_filter.html" %}
+
+<div class="article-grid">
+{% if just_analyzed %}
+<div class="card span-all" style="border-color: var(--accent); border-style: dashed;">
+  <div class="meta"><span class="badge" style="color: var(--accent); border-color: var(--accent);">Just analyzed -- not folded into the brief yet</span></div>
+  {% for article in just_analyzed %}
+  <h3 style="font-size: 1rem; margin: {{ '0' if loop.first else '0.9rem' }} 0 0.3rem;">
+    <a href="{{ article.url }}" target="_blank" rel="noopener">{{ article.title }}</a>
+  </h3>
+  <div class="meta" style="margin-bottom: 0;">
+    <span class="outlet-mark">
+      <img src="/outlet-logo/{{ article.outlet | urlencode }}" alt="" height="22"
+           onerror="this.remove()">
+      <span>{{ article.outlet }}</span>
+    </span>
+    {% if article.importance_score %}
+      {% set imp = article.importance_score %}
+      <span class="badge {{ 'imp-critical' if imp >= 9 else 'imp-high' if imp >= 7 else 'imp-med' if imp >= 4 else 'imp-low' }}">importance {{ imp }}/10</span>
+    {% endif %}
+    {% if article.scope %}<span class="badge scope-{{ article.scope }}">{{ article.scope }}</span>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if learn_today %}
+<div class="card span-all" style="border-color: var(--accent);">
+  <div class="meta"><span class="badge" style="color: var(--accent); border-color: var(--accent);">Learn something today</span></div>
+  <h3><a href="{{ learn_today.url }}" target="_blank" rel="noopener">{{ learn_today.title }}</a></h3>
+  <div class="meta"><span class="outlet-mark">
+      <img src="/outlet-logo/{{ learn_today.outlet | urlencode }}" alt="" height="22"
+           onerror="this.remove()">
+      <span>{{ learn_today.outlet }}</span>
+    </span></div>
+  <p>{{ learn_today.summary }}</p>
+</div>
+{% endif %}
+
+{% for story in stories %}
+<div class="card">
+  <h3><a href="{{ story.url }}" target="_blank" rel="noopener">{{ story.title }}</a></h3>
+  <div class="meta">
+    {% set imp = story.importance_score %}
+    <span class="badge {{ 'imp-critical' if imp >= 9 else 'imp-high' if imp >= 7 else 'imp-med' if imp >= 4 else 'imp-low' }}">importance {{ imp }}/10</span>
+    {% if story.scope %}<span class="badge scope-{{ story.scope }}">{{ story.scope }}</span>{% endif %}
+    <span class="covered-by">covered by
+      {% for outlet in story.outlets %}
+      <span class="outlet-mark" title="{{ outlet }}">
+        <img src="/outlet-logo/{{ outlet | urlencode }}" alt="{{ outlet }}" height="22"
+             onerror="this.replaceWith(document.createTextNode(this.alt))">
+      </span>
+      {% endfor %}
+    </span>
+  </div>
+  <div class="analysis">
+    <span class="label">Analysis</span>
+    <p><strong>What happened:</strong> {{ story.summary }}</p>
+    {% if story.interpretation %}<p><strong>Why it matters:</strong> {{ story.interpretation }}</p>{% endif %}
+    {% if story.narrative_critique %}<p><strong>Framing:</strong> {{ story.narrative_critique }}</p>{% endif %}
+  </div>
+</div>
+{% else %}
+<p style="color: var(--muted);">
+  {% if selected_outlets %}No stories in today's brief from the selected outlets.
+  {% else %}No stories in today's brief.{% endif %}
+</p>
+{% endfor %}
+</div>
+{% endblock %}

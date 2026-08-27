@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} - Intel Brief{% endblock %}
+{% block content %}
+<h2 class="section-title">{{ page_title }}</h2>
+{% include "_outlet_filter.html" %}
+{% if articles %}
+  <div class="article-grid">
+  {% for article in articles %}
+    {% include "_article_card.html" %}
+  {% endfor %}
+  </div>
+{% elif needs_ai and not ai_enabled() %}
+  {# Reachable by a bookmark even though the nav hides these tabs. Say which
+     of the two situations this is rather than "nothing here yet". #}
+  <p style="color: var(--muted);">
+    This tab groups articles by category, which comes from the analysis step.
+    {{ ai_status()[1] }}.<br>
+    Set <code>LLM_BASE_URL</code> to an OpenAI-compatible endpoint to switch
+    the interpretation layer on. Collection, the
+    <a href="/archive">archive</a> and the geographic tabs work without it.
+  </p>
+{% else %}
+  <p style="color: var(--muted);">Nothing here yet -- run the pipeline (discover / extract / analyze) to populate this view.</p>
+{% endif %}
+{% endblock %}

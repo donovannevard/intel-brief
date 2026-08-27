@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ tab.label }} - Intel Brief{% endblock %}
+
+{% block head_extra %}
+{# Vendored, not CDN: this dashboard has to work with the internet down, and
+   it already stores everything it draws. #}
+<script src="/static/plotly.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="fiat-banner">
+  <h2 class="fiat-banner-title">{{ tab.label }}</h2>
+  <div class="fiat-banner-quote">{{ tab.blurb }}</div>
+  <span id="mkt-updated" class="fiat-banner-updated"></span>
+</div>
+
+{#
+  Daily log. Today's note is open; earlier days collapse into <details>
+  elements so a week of history costs one line each instead of scrolling the
+  instrument grid off the page. Native disclosure widgets rather than a
+  scripted accordion -- they work without JS, are keyboard-operable and
+  announce their state to a screen reader for free. The only script is the
+  one-liner that closes siblings, which is a preference, not a requirement.
+#}
+{% if history %}
+<div class="daily-log">
+  <div class="mkt-brief-head">
+    <span class="mkt-brief-label">Daily log</span>
+    <span class="mkt-brief-meta">last {{ history|length }} day{{ 's' if history|length != 1 }}</span>
+  </div>
+
+  {% for entry in history %}
+  <details class="log-day" {{ 'open' if loop.first }}>
+    <summary class="log-summary">
+      <span class="log-date">{{ entry.date | pretty_date }}</span>
+      {% if loop.first %}<span class="log-today">today</span>{% endif %}
+      {% set day_links = links_by_date.get(entry.date) or [] %}
+      {% if day_links %}<span class="log-badge">{{ day_links|length }} news link{{ 's' if day_links|length != 1 }}</span>{% endif %}
+      {% if entry.unverified %}<span class="log-badge log-badge-warn">withheld</span>{% endif %}
+    </summary>
+
+    <div class="log-body">
+      {% if entry.unverified %}
+      <p class="mkt-brief-unverified">
+        This note stated figures that aren't in the computed data
+        ({{ entry.unverified|join(', ') }}) and repeated them when asked to correct itself,
+        so it was withheld. The instrument cards below are computed directly from stored
+        prices and are unaffected.
+      </p>
+      {% else %}
+      <p class="mkt-brief-summary">{{ entry.summary }}</p>
+
+      {% if entry.whats_changing %}
+      <ul class="mkt-brief-list">
+        {% for item in entry.whats_changing %}<li>{{ item }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+
+      {% if entry.watch %}
+      <div class="mkt-brief-watch">
+        <span class="mkt-brief-label">Worth watching</span>
+        <ul class="mkt-brief-list">
+          {% for item in entry.watch %}<li>{{ item }}</li>{% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {% if entry.regime_note %}<p class="mkt-brief-regime">{{ entry.regime_note }}</p>{% endif %}
+      {% endif %}
+
+      {% set day_links = links_by_date.get(entry.date) or [] %}
+      {% if day_links %}
+      <div class="log-links">
+        <span class="mkt-brief-label">Possible connections to the news</span>
+        <span class="mkt-brief-meta">associations, not causation</span>
+        {% for link in day_links %}
+        <div class="mkt-link">
+          <div class="mkt-link-top">
+            <span class="mkt-link-instrument">{{ link.instrument_label }}</span>
+            <span class="mkt-link-confidence" title="model confidence, 1-5">{{ link.confidence or '?' }}/5</span>
+          </div>
+          <div class="mkt-link-rationale">{{ link.rationale }}</div>
+          <a class="mkt-link-article" href="{{ link.url }}" target="_blank" rel="noopener">{{ link.title }}</a>
+          <span class="mkt-link-outlet">{{ link.outlet }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% elif correlation_ran and loop.first %}
+      <p class="mkt-links-empty">
+        Nothing in the last two days of news lines up with the moves on this tab.
+        That is the expected answer on a quiet day.
+      </p>
+      {% endif %}
+
+      <div class="log-foot">{{ entry.model }}{% if entry.generated_at %} · generated {{ entry.generated_at[11:16] }}{% endif %}</div>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div id="mkt-groups">
+  <div class="loading">Loading {{ tab.label|lower }}…</div>
+</div>
+{% endblock %}
+
+{% block body_extra %}
+<script>
+  const MKT_TAB = {{ tab.id|tojson }};
+  const MKT_DEFAULT_PERIOD = {{ period|tojson }};
+</script>
+<script src="/static/markets.js"></script>
+<script>
+  // Accordion behaviour: only one day open at a time. The <details> elements
+  // work fine without this -- it just stops a week of expanded notes pushing
+  // the instrument grid off screen.
+  document.querySelectorAll('.log-day').forEach(day => {
+    day.addEventListener('toggle', () => {
+      if (!day.open) return;
+      document.querySelectorAll('.log-day[open]').forEach(other => {
+        if (other !== day) other.open = false;
+      });
+    });
+  });
+</script>
+{% endblock %}

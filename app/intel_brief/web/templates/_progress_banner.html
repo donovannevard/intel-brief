@@ -1,0 +1,60 @@
+{#
+  Live pipeline progress + the manual pause switch (control.py).
+
+  Always rendered, in one of three states -- running / paused / idle -- rather
+  than only while a stage is in flight, for two reasons: the pause must be
+  reachable BEFORE a run starts (pause tonight, game through tomorrow's 05:30
+  run), and a pause already in effect must stay visible on every page,
+  otherwise a forgotten one silently becomes "why did I stop getting briefs?".
+  While paused there is deliberately no progress animation -- the state cannot
+  change on its own.
+
+  `gpu_freed` is only set on the response to a pause click, where we actually
+  know the outcome of the /unload call; later polls fall back to the plain
+  paused wording rather than restating a claim they haven't verified.
+#}
+<div id="pipeline-progress"
+     class="progress-banner{{ ' is-paused' if progress.paused else '' }}"
+     hx-get="/partials/progress"
+     hx-trigger="every {{ '4s' if (progress.running and not progress.paused) else '30s' }}"
+     hx-swap="outerHTML">
+  <div class="progress-body">
+    <div class="progress-main">
+      <div class="progress-label">
+        {% if progress.paused %}
+          <span class="dot paused"></span>Paused &middot;
+          {%- if progress.gpu_freed is defined and not progress.gpu_freed %}
+            <span class="warn-text">GPU could not be released -- check the logs</span>
+          {%- elif progress.gpu_freed %} GPU released
+          {%- else %} no GPU work until you resume
+          {%- endif %}
+          {%- if progress.running and progress.detail_counts %} ({{ progress.label|lower }}, {{ progress.detail_counts }}){% endif %}
+        {% elif progress.running %}
+          <span class="dot pulse"></span>{{ progress.label }}{% if progress.detail %} &middot; {{ progress.detail }}{% endif %}
+        {% else %}
+          <span class="dot idle"></span>Idle &middot; next run {{ progress.next_run }}
+        {% endif %}
+      </div>
+      {% if progress.running %}
+      <div class="progress-track">
+        <div class="progress-fill{{ ' indeterminate' if (progress.percent is none and not progress.paused) else '' }}"
+             {% if progress.percent is not none %}style="width: {{ progress.percent }}%;"{% endif %}></div>
+      </div>
+      {% endif %}
+    </div>
+    {% if progress.paused %}
+    <button class="control-btn resume" title="Resume analysis"
+            hx-post="/control/resume" hx-target="#pipeline-progress" hx-swap="outerHTML"
+            hx-disabled-elt="this">
+      <span class="btn-idle">Resume</span><span class="btn-busy">Resuming...</span>
+    </button>
+    {% else %}
+    <button class="control-btn"
+            title="Stop analysis and release the GPU until you resume -- e.g. while gaming"
+            hx-post="/control/pause" hx-target="#pipeline-progress" hx-swap="outerHTML"
+            hx-disabled-elt="this">
+      <span class="btn-idle">Pause</span><span class="btn-busy">Freeing GPU...</span>
+    </button>
+    {% endif %}
+  </div>
+</div>

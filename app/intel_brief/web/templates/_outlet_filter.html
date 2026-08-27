@@ -1,0 +1,32 @@
+{#
+  Outlet filter. Each chip toggles its own outlet in the `outlets` query
+  parameter, so filtering is a plain link -- it survives a reload, can be
+  bookmarked, and needs no JavaScript.
+
+  `extra_query` carries anything else the page needs to keep (the archive's
+  search term); without it, filtering would silently discard the search.
+#}
+{% if outlet_options %}
+<div class="outlet-filter">
+  <span class="outlet-filter-label">Outlets</span>
+  {% for o in outlet_options %}
+    {% set is_on = o.outlet in selected_outlets %}
+    {% set next = selected_outlets | reject('equalto', o.outlet) | list if is_on
+                  else selected_outlets + [o.outlet] %}
+    {% set query = ((extra_query ~ '&') if extra_query else '') ~ ('outlets=' ~ (next | join(','))) if next
+                   else extra_query %}
+    <a class="outlet-chip{{ ' on' if is_on }}"
+       href="{{ request.url.path }}{{ ('?' ~ query) if query else '' }}"
+       title="{{ o.outlet }} — {{ o.count }} article{{ 's' if o.count != 1 }}{{ ' (showing)' if is_on }}">
+      {# The endpoint always answers -- a real icon, or a generated monogram
+         for outlets with no usable one -- so there's no has_logo branch. #}
+      <img src="/outlet-logo/{{ o.outlet | urlencode }}" alt="" height="22">
+      <span>{{ o.outlet }}</span>
+      <span class="outlet-chip-count">{{ o.count }}</span>
+    </a>
+  {% endfor %}
+  {% if selected_outlets %}
+  <a class="outlet-clear" href="{{ request.url.path }}{{ ('?' ~ extra_query) if extra_query else '' }}">Clear all</a>
+  {% endif %}
+</div>
+{% endif %}

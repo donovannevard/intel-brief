@@ -1,0 +1,102 @@
+# User-editable feed registry.
+#
+# category_hint: local | country | global | economics | corporate | science | none
+#   (a hint for the Analyze stage's scope/category classification, not a hard rule)
+# outlet_type: mainstream | independent | foreign | official | aggregator
+#
+# All URLs below were live-checked (real HTTP 200, real feed content) before being
+# added -- RSS feeds go dark or get replaced surprisingly often (Reuters and AP both
+# discontinued public RSS entirely), so don't assume a URL still works without checking.
+#
+# To add local news for your area: search "<your city> news RSS feed" -- most local
+# papers/TV stations still publish one even if it's not linked prominently on their site.
+
+feeds:
+  - name: "BBC News"
+    url: "http://feeds.bbci.co.uk/news/rss.xml"
+    category_hint: country
+    outlet: "BBC"
+    outlet_type: mainstream
+    country: "GB"
+    enabled: true
+
+  - name: "The Guardian - World"
+    url: "https://www.theguardian.com/world/rss"
+    category_hint: global
+    outlet: "Guardian"
+    outlet_type: mainstream
+    country: "GB"
+    enabled: true
+
+  - name: "New York Times - Home Page"
+    url: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml"
+    category_hint: global
+    outlet: "NYT"
+    outlet_type: mainstream
+    country: "US"
+    enabled: true
+
+  - name: "Al Jazeera - All"
+    url: "https://www.aljazeera.com/xml/rss/all.xml"
+    category_hint: global
+    outlet: "Al Jazeera"
+    outlet_type: foreign
+    country: "QA"
+    enabled: true
+
+  - name: "Fox News - Latest"
+    url: "https://moxie.foxnews.com/google-publisher/latest.xml"
+    category_hint: country
+    outlet: "Fox News"
+    outlet_type: mainstream
+    country: "US"
+    enabled: true
+
+  - name: "Deutsche Welle - English"
+    url: "https://rss.dw.com/xml/rss-en-all"
+    category_hint: global
+    outlet: "DW"
+    outlet_type: foreign
+    country: "DE"
+    enabled: true
+
+  - name: "Ars Technica - Science"
+    url: "https://feeds.arstechnica.com/arstechnica/science"
+    category_hint: science
+    outlet: "Ars Technica"
+    outlet_type: independent
+    country: "US"
+    enabled: true
+
+  - name: "arXiv - Computer Science (recent)"
+    url: "http://export.arxiv.org/rss/cs"
+    category_hint: science
+    outlet: "arXiv"
+    outlet_type: official
+    country: "US"
+    enabled: true
+
+  - name: "arXiv - Mathematics (recent)"
+    url: "http://export.arxiv.org/rss/math"
+    category_hint: science
+    outlet: "arXiv"
+    outlet_type: official
+    country: "US"
+    enabled: true
+
+  - name: "CoinDesk"
+    url: "https://www.coindesk.com/arc/outboundfeeds/rss/"
+    category_hint: bitcoin
+    outlet: "CoinDesk"
+    outlet_type: independent
+    country: "US"
+    enabled: true
+
+  # --- Local news placeholder ---
+  # - name: "<Your City> Local News"
+  #   url: "<RSS feed URL for your local paper/TV station>"
+  #   category_hint: local
+  #   outlet: "<Outlet name>"
+  #   outlet_type: mainstream
+  #   country: "GB"
+  #   enabled: true
