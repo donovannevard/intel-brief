@@ -55,6 +55,12 @@ def sync_feeds() -> int:
 # whatever LOCAL_PLACES implies (see uk_regions.py), and then left alone.
 # ---------------------------------------------------------------------------
 
+# First line of every generated feeds.yaml. install.sh looks for it to tell a
+# file this code wrote (the operator's now, edits and all -- never touched
+# again) from one that pre-dates generation, which reflects nothing in
+# LOCAL_PLACES and would otherwise be kept forever just because it exists.
+GENERATED_MARKER = "# generated-by: intel-brief init-feeds"
+
 _GENERATED_HEADER = """
   # --- Local news (generated from LOCAL_PLACES) -----------------------------
   # Derived at install time from LOCAL_PLACES in .env, via uk_regions.py.
@@ -92,7 +98,7 @@ def render_feeds_yaml(template: str, local_places) -> str:
 
     places = list(local_places)
     matched = uk_regions.regions_for_places(places)
-    body = template.rstrip("\n")
+    body = GENERATED_MARKER + "\n" + template.rstrip("\n")
 
     if not matched:
         note = _NO_MATCH_NOTE.format(

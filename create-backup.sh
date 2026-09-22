@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# create-backup.sh -- mirror this repo plus the live archive to a USB volume.
+# create-backup.sh -- copy the live archive and this host's config to USB.
 #
 # What matters is data/intel.db. The archive accumulates for years and no
 # amount of reprocessing rebuilds it: RSS serves only what is currently live,
-# so a day not collected is gone for good. Everything else here is convenience
-# -- the code is in git, and markets.db regenerates from the providers.
+# so a day not collected is gone for good. Alongside it goes what makes this
+# install *this* install -- .env and the generated feeds.yaml. The code is not
+# copied: it lives on GitHub, and RESTORE.md in the backup says how to clone a
+# fresh copy and put the data and config back under it.
 #
 # Two things this does that a plain `cp -r` gets wrong:
 #
@@ -43,7 +45,7 @@ while [ $# -gt 0 ]; do
         --no-secrets)    INCLUDE_SECRETS=0; shift ;;
         --keep-previous) KEEP_PREVIOUS=1; shift ;;
         --yes|-y)        ASSUME_YES=1; shift ;;
-        -h|--help)       sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help)       sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -142,14 +144,7 @@ say "target  : $LIVE"
 
 rm -rf "$STAGING"; mkdir -p "$STAGING"
 
-# --- 1. the repository ------------------------------------------------------
-head_ "Repository"
-tar cf - -C "$REPO_DIR" \
-    --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' --exclude='data' \
-    . 2>/dev/null | (mkdir -p "$STAGING/repo" && tar xf - -C "$STAGING/repo")
-say "repo -> repo/ ($(du -sh "$STAGING/repo" | cut -f1))"
-
-# --- 2. the archive ---------------------------------------------------------
+# --- 1. the archive ---------------------------------------------------------
 head_ "Archive"
 mkdir -p "$STAGING/data"
 python3 - "$DATA_DIR/intel.db" "$STAGING/data/intel.db" "$DATA_DIR/markets.db" "$STAGING/data/markets.db" <<'PY'
@@ -178,7 +173,7 @@ for src, dst in ((sys.argv[1], sys.argv[2]), (sys.argv[3], sys.argv[4])):
     snapshot(src, dst)
 PY
 
-# --- 3. host configuration --------------------------------------------------
+# --- 2. host configuration --------------------------------------------------
 head_ "Host configuration"
 mkdir -p "$STAGING/host"
 if [ -f /etc/systemd/system/intel-brief.service ]; then
@@ -186,19 +181,44 @@ if [ -f /etc/systemd/system/intel-brief.service ]; then
     say "unit -> host/intel-brief.service"
 fi
 
-if [ "$INCLUDE_SECRETS" -eq 1 ]; then
-    for f in /srv/intel-brief/app/.env "$REPO_DIR/app/.env"; do
-        if [ -f "$f" ]; then
-            cp "$f" "$STAGING/host/env"
-            say "config -> host/env (includes any API key you configured)"
-            break
-        fi
-    done
-else
+ENV_SRC=""
+for f in /srv/intel-brief/app/.env "$REPO_DIR/app/.env"; do
+    [ -f "$f" ] && { ENV_SRC="$f"; break; }
+done
+
+if [ "$INCLUDE_SECRETS" -eq 1 ] && [ -n "$ENV_SRC" ]; then
+    cp "$ENV_SRC" "$STAGING/host/env"
+    say "config -> host/env (includes LOCAL_PLACES and any API key you configured)"
+elif [ -n "$ENV_SRC" ]; then
     say "secrets skipped (--no-secrets); rebuild .env from app/.env.example"
 fi
 
-# --- 4. verify the copies, not the originals --------------------------------
+# feeds.yaml is generated from LOCAL_PLACES at install, so it could be rebuilt
+# -- but it is also the one file an operator is told to edit by hand, and a
+# regenerated copy would silently drop those edits. Found the way the service
+# finds it: FEEDS_PATH in .env if set (relative to app/), else app/feeds.yaml.
+FEEDS_SRC=""
+if [ -n "$ENV_SRC" ]; then
+    APP_DIR="$(dirname "$ENV_SRC")"
+    FEEDS_SRC="$(grep -oP '^FEEDS_PATH="?\K[^"]+' "$ENV_SRC" 2>/dev/null | head -1 || true)"
+    FEEDS_SRC="${FEEDS_SRC:-$APP_DIR/feeds.yaml}"
+    case "$FEEDS_SRC" in /*) ;; *) FEEDS_SRC="$APP_DIR/${FEEDS_SRC#./}" ;; esac
+fi
+if [ -n "$FEEDS_SRC" ] && [ -f "$FEEDS_SRC" ]; then
+    cp "$FEEDS_SRC" "$STAGING/host/feeds.yaml"
+    say "feeds -> host/feeds.yaml (from $FEEDS_SRC)"
+else
+    FEEDS_SRC=""
+    say "no feeds.yaml found -- the installer will generate one from LOCAL_PLACES"
+fi
+
+# Which code this data was running under. Not copied -- it is on GitHub -- but
+# worth knowing when restoring onto a version that has moved on since.
+CODE_URL="$(git -c safe.directory="$REPO_DIR" -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)"
+CODE_REV="$(git -c safe.directory="$REPO_DIR" -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+[ -n "$CODE_URL" ] && say "code    : $CODE_URL @ ${CODE_REV:-unknown} (recorded, not copied)"
+
+# --- 3. verify the copies, not the originals --------------------------------
 head_ "Verifying"
 python3 - "$DATA_DIR/intel.db" "$STAGING/data/intel.db" "$DATA_DIR/markets.db" "$STAGING/data/markets.db" <<'PY'
 import os, sqlite3, sys
@@ -257,13 +277,14 @@ if [ "$VERIFY_RC" -ne 0 ]; then
     die "verification failed -- staging discarded, the existing backup at $LIVE is untouched."
 fi
 
-# --- 5. manifest and restore notes ------------------------------------------
+# --- 4. manifest and restore notes ------------------------------------------
 date -Iseconds > "$STAGING/BACKUP_DATE"
 {
     echo "intel-brief backup"
     echo "created : $(date -Iseconds)"
     echo "host    : $(hostname) / $(uname -sr)"
     echo "archive : $DATA_DIR"
+    echo "code    : ${CODE_URL:-unknown} @ ${CODE_REV:-unknown} (not included -- clone it)"
     echo
     du -sh "$STAGING"/* 2>/dev/null | sed "s|$STAGING/|  |"
     echo
@@ -291,70 +312,96 @@ for n, p in (('intel.db', '$STAGING/data/intel.db'), ('markets.db', '$STAGING/da
 cat > "$STAGING/RESTORE.md" <<'RESTORE_EOF'
 # Restoring intel-brief
 
-`data/intel.db` is the part that cannot be rebuilt. RSS serves only what is
-currently live, so any day not already collected is gone. Restore it first.
+This backup holds the **data and this host's configuration**, not the code.
+The code is on GitHub; you clone a fresh copy and put these back under it.
 
-## 1. Code
+```
+data/intel.db     the archive -- the only part that cannot be rebuilt
+data/markets.db   price history (regenerates from the providers, but slowly)
+host/env          .env: LOCAL_PLACES, LLM endpoint, any API key
+host/feeds.yaml   the feed list, including any hand edits
+host/*.service    the systemd unit, for reference -- install.sh writes a fresh one
+MANIFEST.txt      counts to check the restore against, and the code version
+```
+
+Run everything below from the directory holding this file.
+
+## 1. Get the code
 
 ```bash
-cp -r repo/ ~/intel-brief && cd ~/intel-brief
+git clone @CODE_URL@ ~/intel-brief
+```
+
+`MANIFEST.txt` records the commit this data was last running under
+(`@CODE_REV@`). The current version is almost always what you want; to match
+the backup exactly, `git -C ~/intel-brief checkout @CODE_REV@`.
+
+## 2. Put the data and config where the installer will find them
+
+Before installing, not after: the installer keeps an existing archive, `.env`
+and generated `feeds.yaml`, so staging them first means one install run sets
+up everything with your settings rather than the example ones.
+
+```bash
+sudo mkdir -p /srv/intel-brief/app /srv/intel-brief/data
+sudo cp data/intel.db data/markets.db /srv/intel-brief/data/
+sudo cp host/env        /srv/intel-brief/app/.env
+sudo cp host/feeds.yaml @FEEDS_DEST@
+```
+
+No `host/env` (backup made with `--no-secrets`)? Skip that line; the installer
+seeds `.env` from the example, and you set `LOCAL_PLACES` and your LLM
+endpoint in `/srv/intel-brief/app/.env` afterwards, then
+`sudo ./service.sh restart`. No `host/feeds.yaml`? Skip that too -- the
+installer generates one from `LOCAL_PLACES`.
+
+## 3. Install
+
+```bash
+cd ~/intel-brief
 sudo ./install.sh
 ```
 
-This creates the service user, deploys to `/srv/intel-brief`, seeds config and
-installs the systemd unit. It leaves an existing archive alone, so it is safe to
-run before or after step 2.
+Creates the service user, deploys the code to `/srv/intel-brief`, fixes
+ownership of everything you just copied (exfat stores no permissions, so it all
+arrived owned by whoever copied it), and starts the service.
 
-## 2. The archive
-
-```bash
-sudo cp data/intel.db data/markets.db /srv/intel-brief/data/
-sudo chown svc-intel-brief:svc-intel-brief /srv/intel-brief/data/*.db
-```
-
-Check it arrived intact, and compare against `MANIFEST.txt`:
+## 4. Check it
 
 ```bash
-python3 -c "import sqlite3; c=sqlite3.connect('/srv/intel-brief/data/intel.db'); \
+./service.sh status
+python3 -c "import sqlite3; c=sqlite3.connect('file:/srv/intel-brief/data/intel.db?mode=ro', uri=True); \
 print(c.execute('PRAGMA integrity_check').fetchone()[0], \
 c.execute('SELECT count(*) FROM articles').fetchone()[0], 'articles')"
 ```
 
-## 3. Configuration
-
-If `host/env` is present, it is a working `.env` including whatever API key was
-configured. exfat stores no permissions, so re-set them:
-
-```bash
-sudo cp host/env /srv/intel-brief/app/.env
-sudo chown svc-intel-brief:svc-intel-brief /srv/intel-brief/app/.env
-sudo chmod 640 /srv/intel-brief/app/.env
-```
-
-Otherwise copy `app/.env.example` and fill it in. Nothing in the archive depends
-on the old values.
-
-## 4. Start
-
-```bash
-sudo systemctl enable --now intel-brief
-curl -s localhost:8300/status | head
-```
+Compare the article count with `MANIFEST.txt`. The dashboard is on
+`http://localhost:8300`; the Status page says whether the interpretation layer
+is off, configured-but-unreachable, or on.
 
 ## Different hardware
 
-intel-brief needs no GPU. Left as installed it runs as a reader and archive.
-To switch the interpretation layer back on, set `LLM_BASE_URL` to any
-OpenAI-compatible endpoint -- llama-swap, ollama, LM Studio, a hosted API --
-and restart. Two settings are Intel-specific and safe to leave off elsewhere:
-`GPU_GUARD` (reads `intel_gpu_top`) and `LLM_UNLOAD_URL` (a llama-swap
-extension, not part of the OpenAI API).
+intel-brief needs no GPU. With `LLM_BASE_URL` empty it runs as a reader and
+archive. Two settings are Intel/llama-swap-specific and safe to turn off
+elsewhere: `GPU_GUARD` (reads `intel_gpu_top`) and `LLM_UNLOAD_URL` (a
+llama-swap extension, not part of the OpenAI API).
 
-The Status page states which of the three states is in effect: off,
-configured-but-unreachable, or on.
+## Restoring to a different prefix
+
+`host/env` has absolute paths for `/srv/intel-brief` in `DB_PATH` and
+`MARKETS_DB_PATH` (and `FEEDS_PATH`, if set). Edit them to match before running
+`./install.sh --prefix <elsewhere>`.
 RESTORE_EOF
 
-# --- 6. swap in -------------------------------------------------------------
+# Fill in what is specific to this backup. Placeholders rather than an
+# unquoted heredoc, because markdown is full of backticks that the shell would
+# otherwise execute.
+FEEDS_DEST="${FEEDS_SRC:-/srv/intel-brief/app/feeds.yaml}"
+sed -i -e "s|@CODE_URL@|${CODE_URL:-<the repository URL>}|g" \
+       -e "s|@CODE_REV@|${CODE_REV:-unknown}|g" \
+       -e "s|@FEEDS_DEST@|$FEEDS_DEST|g" "$STAGING/RESTORE.md"
+
+# --- 5. swap in -------------------------------------------------------------
 head_ "Installing"
 rm -rf "$PREVIOUS"
 [ -d "$LIVE" ] && mv "$LIVE" "$PREVIOUS"

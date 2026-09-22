@@ -124,7 +124,7 @@ if [ "$HAVE_DATA" -eq 1 ]; then
     if [ "$PURGE" -eq 1 ]; then
         say "archive : $SIZE at $PREFIX/data -- DESTROYED, no backup (--purge)"
     else
-        say "archive : $SIZE at $PREFIX/data -- saved to $ARCHIVE"
+        say "archive : $SIZE at $PREFIX/data, plus .env and feeds.yaml -- saved to $ARCHIVE"
     fi
 else
     say "archive : none found at $PREFIX/data"
@@ -163,13 +163,21 @@ fi
 if [ "$HAVE_DATA" -eq 1 ] && [ "$PURGE" -eq 0 ]; then
     head_ "Archive"
     run mkdir -p "$BACKUP_DIR"
-    run tar czf "$ARCHIVE" -C "$PREFIX" data
+    # The config goes with the data: .env holds LOCAL_PLACES and any API key,
+    # feeds.yaml any hand edits. Deleting them with the rest of <prefix> would
+    # leave an archive that restores into an install configured for nowhere.
+    # (The tarball is mode 600 below, since .env can hold a key.)
+    KEEP=(data)
+    for f in app/.env app/feeds.yaml feeds.yaml; do
+        [ -f "$PREFIX/$f" ] && KEEP+=("$f")
+    done
+    run tar czf "$ARCHIVE" -C "$PREFIX" "${KEEP[@]}"
     if [ "$DRY_RUN" -eq 0 ]; then
         # Readable by whoever invoked sudo, not just root -- a backup nobody
         # can open is not a backup.
         [ -n "${SUDO_USER:-}" ] && chown "$SUDO_USER" "$ARCHIVE" 2>/dev/null || true
         chmod 600 "$ARCHIVE"
-        say "saved $(du -h "$ARCHIVE" | cut -f1) to $ARCHIVE"
+        say "saved $(du -h "$ARCHIVE" | cut -f1) to $ARCHIVE (${KEEP[*]})"
     fi
 fi
 
@@ -208,11 +216,11 @@ elif [ "$HAVE_DATA" -eq 1 ] && [ "$PURGE" -eq 0 ]; then
   The archive is at:
       $ARCHIVE
 
-  To restore it into a fresh install:
-      sudo ./install.sh --no-start
-      sudo tar xzf $ARCHIVE -C $PREFIX
-      sudo chown -R $SVC_USER:$SVC_USER $PREFIX/data
-      sudo systemctl enable --now ${UNIT_NAME%.service}
+  It holds the data plus .env and feeds.yaml. To restore, unpack it first and
+  then install -- the installer keeps an existing archive and config, and fixes
+  ownership of everything:
+      sudo mkdir -p $PREFIX && sudo tar xzf $ARCHIVE -C $PREFIX
+      sudo ./install.sh
 NEXT
 else
     say "removed. The checkout you ran this from is untouched."

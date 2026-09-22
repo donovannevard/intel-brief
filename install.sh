@@ -150,11 +150,27 @@ say "python environment ready"
 # again -- a deploy that silently reverted it would hand back a Local tab for
 # the wrong part of the country.
 head_ "Feeds"
+# Where the service will read it from: FEEDS_PATH if .env sets one (relative
+# paths resolve from app/, the service's working directory), else app/.
+FEEDS_FILE="$(grep -oP '^FEEDS_PATH="?\K[^"]+' "$ENV_FILE" 2>/dev/null | head -1 || true)"
+FEEDS_FILE="${FEEDS_FILE:-$PREFIX/app/feeds.yaml}"
+case "$FEEDS_FILE" in /*) ;; *) FEEDS_FILE="$PREFIX/app/${FEEDS_FILE#./}" ;; esac
+
+# A feeds.yaml without the generator's marker pre-dates LOCAL_PLACES: it was
+# written by hand or by an older installer, and reflects nothing in .env. Left
+# in place it would be kept forever simply because it exists, and the Local
+# tab would go on polling whatever region it happened to name. Set aside (not
+# deleted -- it may hold edits worth copying across) so a fresh one is built.
+if [ -f "$FEEDS_FILE" ] && ! head -1 "$FEEDS_FILE" | grep -q '^# generated-by: intel-brief init-feeds'; then
+    mv "$FEEDS_FILE" "$FEEDS_FILE.pre-regions"
+    say "$(basename "$FEEDS_FILE") pre-dates LOCAL_PLACES -- kept as $(basename "$FEEDS_FILE").pre-regions, regenerating"
+fi
+
 su -s /bin/bash "$SVC_USER" -c \
     "export HOME=$PREFIX FEEDS_TEMPLATE=$PREFIX/app/feeds.example.yaml; \
      cd $PREFIX/app && $UV run python3 -m intel_brief.cli init-feeds" \
     || die "could not generate feeds.yaml"
-chown "$SVC_USER:$SVC_USER" "$PREFIX/app/feeds.yaml" 2>/dev/null || true
+chown "$SVC_USER:$SVC_USER" "$FEEDS_FILE" 2>/dev/null || true
 
 # --- unit ------------------------------------------------------------------
 head_ "Service"

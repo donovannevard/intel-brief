@@ -152,8 +152,12 @@ cleanly elsewhere:
 sudo ./create-backup.sh
 ```
 
-Mirrors the repo and the live archive to a USB volume. With one plugged in it
-uses it and says which; with several it lists them — label, device, size, free
+Copies the live archive and this machine's configuration — `.env` (your
+`LOCAL_PLACES`, LLM endpoint and any key) and `feeds.yaml` (including hand
+edits) — to a USB volume. The code isn't included: it's here on GitHub, and the
+backup's `RESTORE.md` walks through cloning a fresh copy and putting the data
+and config back under it, with the clone URL and the commit it was running
+already filled in. With one volume plugged in it uses it and says which; with several it lists them — label, device, size, free
 space, and whether each already holds a backup — and asks. It never guesses,
 because writing a backup onto the wrong stick is both a privacy leak and a
 backup you will not find when you need it. `--dest` names a path outright.

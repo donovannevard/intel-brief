@@ -117,6 +117,14 @@ else:
                       bool(local) == want_local)
                 check(f"{label}: every feed has a url",
                       all(f.get("url") for f in parsed["feeds"]))
+            # install.sh keeps a feeds.yaml only if it starts with this line,
+            # and sets anything else aside as pre-dating LOCAL_PLACES. Losing it
+            # would make every deploy discard the operator's edited file.
+            from intel_brief.feeds import GENERATED_MARKER
+            check(f"{label}: first line is the generator marker",
+                  out.read_text().splitlines()[0] == GENERATED_MARKER)
+            check("install.sh tests for the same marker text",
+                  GENERATED_MARKER in (APP_DIR.parent / "install.sh").read_text())
             # Never clobber: the file is the operator's once written.
             again = init_feeds(TEMPLATE, out, places)
             check(f"{label}: refuses to overwrite", again["written"] is False)
