@@ -210,27 +210,38 @@ fi
 
 # --- what next -------------------------------------------------------------
 PORT="$(grep -oP '^DASHBOARD_PORT="?\K[0-9]+' "$ENV_FILE" 2>/dev/null || echo 8300)"
+# Read back what this install is actually configured to do, rather than
+# printing the same setup instructions to someone who has already done it.
+# Only the endpoint URL and model are shown -- never the key.
+env_val() { grep -oP "^$1=\"?\\K[^\"]*" "$ENV_FILE" 2>/dev/null | head -1 || true; }
+LLM_URL="$(env_val LLM_BASE_URL)"
+LLM_MODEL_SET="$(env_val LLM_MODEL)"
+PLACES_SET="$(env_val LOCAL_PLACES)"
+
 head_ "Done"
 say "Dashboard: http://localhost:$PORT"
-cat <<NEXT
+if [ -n "$PLACES_SET" ]; then
+    say "Local    : $PLACES_SET"
+else
+    say "Local    : NOT SET -- the Local tab will stay empty. Set LOCAL_PLACES in"
+    say "           $ENV_FILE, delete the generated feeds.yaml, and re-run this."
+fi
+if [ -n "$LLM_URL" ]; then
+    say "AI layer : on -- $LLM_URL${LLM_MODEL_SET:+ ($LLM_MODEL_SET)}"
+    say "           the Status page shows whether it is actually answering"
+else
+    cat <<NEXT
+  AI layer : off -- running as a reader and archive
 
-  Interpretation layer (optional)
-  ------------------------------
-  As installed, intel-brief runs as a reader and archive: headlines from every
-  feed linking out to the publisher, grouped by where the story is about, with
-  full-text search and computed market figures. No model required.
-
-  To switch on the interpretation layer -- per-article summaries, why it
-  matters, how it is framed, the morning brief, and the market narratives --
-  set LLM_BASE_URL in $ENV_FILE to any OpenAI-compatible endpoint:
+  That is a complete setup: headlines from every feed linking out to the
+  publisher, grouped by where the story is about, with full-text search and
+  computed market figures. To add per-article summaries, framing, the morning
+  brief and the market narratives, set LLM_BASE_URL in $ENV_FILE to any
+  OpenAI-compatible endpoint, then: sudo ./service.sh restart
 
       LLM_BASE_URL="http://127.0.0.1:8090/v1"     # llama-swap on this machine
       LLM_BASE_URL="http://<lan-host>:11434/v1"   # ollama on the LAN
       LLM_MODEL="qwen2.5-7b"
       EMBEDDING_BASE_URL="..."   EMBEDDING_MODEL="nomic-embed-text"
-
-  then: systemctl restart ${UNIT_NAME%.service}
-
-  The Status page always says which of the three states is in effect --
-  off, configured-but-unreachable, or on.
 NEXT
+fi

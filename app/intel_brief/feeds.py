@@ -75,15 +75,27 @@ _GENERATED_HEADER = """
   # Inside a single "BBC" bucket a regional story loses every slot to a national
   # one, and the Local tab stays empty -- which is the whole point of these."""
 
+_REGENERATE = """
+  #
+  # To regenerate once that is fixed: delete this file and re-run install.sh.
+  # (It is otherwise never rewritten, so that hand edits survive a deploy.)"""
+
+_NO_PLACES_NOTE = """
+  # --- Local news -----------------------------------------------------------
+  # No local feeds were generated: LOCAL_PLACES was not set in .env when this
+  # file was written. Nothing is filed as local either, so the Local tab stays
+  # empty until it is. See docs/uk-regions.md for place names that select a
+  # region.""" + _REGENERATE
+
 _NO_MATCH_NOTE = """
   # --- Local news -----------------------------------------------------------
   # No local feeds were generated: LOCAL_PLACES in .env matched none of the
   # regions in uk_regions.py ({unmatched}).
   #
-  # Local classification still works off the place names you gave, so anything
-  # a national feed publishes about them will be filed as local -- there is
-  # just no regional publisher being polled. See docs/uk-regions.md for the
-  # place names that select a region."""
+  # Local classification still works off those names, so anything a national
+  # feed publishes about them is filed as local -- there is just no regional
+  # publisher being polled. See docs/uk-regions.md for the place names that
+  # select a region.""" + _REGENERATE
 
 
 def render_feeds_yaml(template: str, local_places) -> str:
@@ -101,8 +113,11 @@ def render_feeds_yaml(template: str, local_places) -> str:
     body = GENERATED_MARKER + "\n" + template.rstrip("\n")
 
     if not matched:
-        note = _NO_MATCH_NOTE.format(
-            unmatched=", ".join(uk_regions.unmatched(places)) or "none set")
+        if not any(p.strip() for p in places):
+            note = _NO_PLACES_NOTE
+        else:
+            note = _NO_MATCH_NOTE.format(
+                unmatched=", ".join(uk_regions.unmatched(places)))
         return body + "\n" + note + "\n"
 
     out = [body, _GENERATED_HEADER.format(

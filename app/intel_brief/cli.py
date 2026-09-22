@@ -28,6 +28,12 @@ def _init_feeds():
         print(f"            regions: {', '.join(r['regions'])}")
     if r["unmatched"]:
         print(f"            no region matched: {', '.join(r['unmatched'])}")
+    if not settings.local_places:
+        # The old behaviour here was silence, which read as success. An unset
+        # LOCAL_PLACES means no local feeds *and* nothing classified as local.
+        print("            WARNING: LOCAL_PLACES is not set in .env -- no local feeds,")
+        print("            and the Local tab will stay empty. Set it, delete this")
+        print("            feeds.yaml, and re-run install.sh. See docs/uk-regions.md.")
 
 
 def main():
