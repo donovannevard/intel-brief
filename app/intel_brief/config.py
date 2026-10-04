@@ -57,6 +57,8 @@ class Settings:
     fetch_user_agent: str
     fetch_delay_seconds: int
     pipeline_run_time: str
+    market_review_day: str
+    market_review_time: str
     analyze_time_budget_seconds: int
     stale_article_hours: int
     archive_start_date: str
@@ -128,6 +130,13 @@ def load_settings() -> Settings:
         ),
         fetch_delay_seconds=_int("FETCH_DELAY_SECONDS", 2),
         pipeline_run_time=os.environ.get("PIPELINE_RUN_TIME", "05:30"),
+        # The market narrative runs weekly, not daily. A day of price moves is
+        # mostly noise to read about every morning; a week has a shape worth
+        # describing, and the digest already works in 7-day terms
+        # (typical_7d_move, move_vs_typical). Day names as APScheduler takes
+        # them: mon tue wed thu fri sat sun.
+        market_review_day=os.environ.get("MARKET_REVIEW_DAY", "mon"),
+        market_review_time=os.environ.get("MARKET_REVIEW_TIME", "07:00"),
         analyze_time_budget_seconds=_int("ANALYZE_TIME_BUDGET_SECONDS", 3600),
         stale_article_hours=_int("STALE_ARTICLE_HOURS", 48),
         # The date the archive is meant to be complete from. Articles before

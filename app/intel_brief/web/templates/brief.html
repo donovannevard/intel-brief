@@ -2,6 +2,7 @@
 {% block title %}Today's Brief - Intel Brief{% endblock %}
 {% block content %}
 <h2 class="section-title">Morning Brief -- {{ brief_date }}</h2>
+{% include "_range_filter.html" %}
 {% include "_outlet_filter.html" %}
 
 <div class="article-grid">

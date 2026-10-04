@@ -2,6 +2,7 @@
 {% block title %}{{ page_title }} - Intel Brief{% endblock %}
 {% block content %}
 <h2 class="section-title">{{ page_title }}</h2>
+{% include "_range_filter.html" %}
 {% include "_outlet_filter.html" %}
 {% if articles %}
   <div class="article-grid">

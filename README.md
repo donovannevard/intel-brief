@@ -106,20 +106,61 @@ failed, so the queue is picked up whenever the model returns.
 
 ## How it runs
 
-One daily chain at 05:30:
+Three jobs on different clocks, because they cost very different things.
+
+**Collection — daily at 05:30, automatic.**
 
 ```
-discover → extract → analyze → derive → markets_ingest → market_brief → correlate
+discover → extract
 ```
+
+Minutes of network, and it has to happen every day: RSS serves only what is
+currently live, so a day not collected is gone for good. Articles are readable
+as soon as they land, newest first.
+
+**Analysis — on demand, from the Status page.**
+
+```
+analyze → derive (the morning brief) → comments
+```
+
+Hours on the GPU, which is a poor thing to start unattended on a machine you
+also use. So it waits to be asked. Until it runs, the news tabs show what was
+collected, unsorted, with headlines linking out to the publisher; analysis adds
+summaries, framing, the morning brief, and the sorting that balances coverage
+across outlets. The Status page shows how many articles are waiting.
+
+**Market review — weekly, Mondays at 07:00.**
+
+```
+markets_ingest → market_brief → correlate
+```
+
+A single day of price moves is mostly noise to read about; a week has a shape
+worth describing, and the digest the model is given already reasons in 7-day
+terms. Prices themselves keep refreshing every 6 hours regardless — this is
+only the narrative over them. `MARKET_REVIEW_DAY` and `MARKET_REVIEW_TIME`
+move it.
 
 Stages are isolated: the ones needing a model are skipped when there isn't one,
-and a failure in any stage does not stop the others. Prices refresh separately
-every 6 hours. Page loads never make a model call — everything shown was
-computed by a scheduled run.
+and a failure in any stage does not stop the others. Page loads never make a
+model call — everything shown was computed by a run.
 
-A missed run is caught up the same day only. A day missed entirely cannot be
-recovered, because RSS serves only what is currently live — which is why the
-archive matters and why there is a backup story.
+A missed collection is caught up the same day only. A day missed entirely
+cannot be recovered, which is why the archive matters and why there is a backup
+story. Analysis has no such deadline: it reads stored articles, so it can be
+run whenever there is capacity.
+
+## Reading a date range
+
+Every news page takes a window: **Today** by default, with **7 days**,
+**30 days** and **All**, plus a custom from/to. Today is the default because
+that is the normal use; the longer windows are for catching up after a few days
+away. Archive search defaults to everything instead — searching an archive
+means searching all of it.
+
+The window and the outlet filter carry each other, and both live in the query
+string, so any view is bookmarkable: `/local?range=7d&outlets=Sky%20News`.
 
 ## Hardware notes
 

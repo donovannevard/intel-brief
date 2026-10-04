@@ -32,29 +32,29 @@
 </div>
 
 <div class="card">
-  <h3>Today's run</h3>
+  <h3>Today's collection</h3>
   {#
-    Catch-up covers a missed run on the SAME day only. A previous day that was
-    missed entirely cannot be rebuilt -- discover() reads what the feeds serve
-    now, and RSS keeps no history -- so this panel talks about today and never
-    offers to make up a backlog it couldn't deliver.
+    Collection and analysis are separate jobs now. Collection runs daily and
+    must: a missed day cannot be rebuilt, because discover() reads what the
+    feeds serve now and RSS keeps no history. Analysis is GPU-bound and is
+    asked for below, when there is capacity for it.
   #}
   {% if todays_run.done %}
   <p class="day-panel-note status-ok" style="margin:0;">
-    Completed at {{ todays_run.at }}. Scheduled for {{ scheduled_time }} daily; if the
+    Collected at {{ todays_run.at }}. Scheduled for {{ scheduled_time }} daily; if the
     machine is off then, it runs on the next start-up instead.
   </p>
   {% elif pipeline_running %}
   <p class="day-panel-note" style="margin:0;">Running now — progress is in the banner above.</p>
   {% else %}
   <p class="day-panel-note" style="margin:0 0 10px;">
-    Hasn't completed today. It's scheduled for {{ scheduled_time }} and catches up
+    Hasn't collected today. It's scheduled for {{ scheduled_time }} and catches up
     automatically on the next start-up — this button is for when that didn't happen
     or the run failed.
   </p>
   {% if not backfill_running %}
   <form method="post" action="/control/run-now" style="margin:0;">
-    <button type="submit" class="control-btn resume">Run today's pipeline now</button>
+    <button type="submit" class="control-btn resume">Collect today's articles now</button>
   </form>
   {% endif %}
   {% endif %}
@@ -62,6 +62,67 @@
     A day missed entirely can't be recovered: collection reads the live feeds, which
     keep no history. Days already collected can be processed from the chart below.
   </p>
+</div>
+
+<div class="card">
+  <h3>Analysis</h3>
+  {#
+    Deliberately never on a timer. Collection is minutes of network; analysis
+    is hours on the GPU, which is a bad thing to start unattended on a machine
+    someone also games on. Articles are readable the moment they are
+    collected, so nothing is waiting on this -- it adds summaries, framing,
+    the morning brief and the scope sorting on top.
+  #}
+  {% if pending_analysis %}
+  <p class="day-panel-note" style="margin:0 0 10px;">
+    <strong>{{ pending_analysis }}</strong> article{{ '' if pending_analysis == 1 else 's' }}
+    collected and not yet analysed. They are already readable in the news tabs,
+    newest first; analysing them adds summaries, framing and the morning brief,
+    and sorts them for breadth of coverage.
+  </p>
+  {% else %}
+  <p class="day-panel-note status-ok" style="margin:0 0 10px;">Nothing waiting to be analysed.</p>
+  {% endif %}
+  {% if last_analysis %}
+  <p class="day-panel-note" style="margin:0 0 10px;font-size:11.5px;">
+    Last run {{ last_analysis.finished_at | pretty_date }}{% if not last_analysis.ok %} — it failed; see the runs below{% endif %}.
+  </p>
+  {% endif %}
+  {% if pipeline_running or backfill_running %}
+  <p class="day-panel-note" style="margin:0;">Something is already running — progress is in the banner above.</p>
+  {% elif not ai_enabled() %}
+  <p class="day-panel-note" style="margin:0;">
+    No model configured, so there is nothing to run. Articles stay readable either way.
+  </p>
+  {% else %}
+  <form method="post" action="/control/analyze" style="margin:0;">
+    <button type="submit" class="control-btn resume">Analyse collected articles</button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Market review</h3>
+  {#
+    Weekly, not daily: one day of price moves is mostly noise to read about,
+    while a week has a shape worth describing -- and the digest the model is
+    given already reasons in 7-day terms. Prices themselves keep refreshing on
+    their own interval; this is only the narrative over them.
+  #}
+  <p class="day-panel-note" style="margin:0 0 10px;">
+    Scheduled {{ review_schedule }}, weekly. Prices refresh on their own interval
+    regardless; this writes the narrative and links it to the week's news.
+    {% if last_review %}<br>Last run {{ last_review.finished_at | pretty_date }}{% if not last_review.ok %} — it failed{% endif %}.{% endif %}
+  </p>
+  {% if pipeline_running or backfill_running %}
+  <p class="day-panel-note" style="margin:0;">Something is already running — progress is in the banner above.</p>
+  {% elif not ai_enabled() %}
+  <p class="day-panel-note" style="margin:0;">No model configured — market figures are still collected and charted.</p>
+  {% else %}
+  <form method="post" action="/control/market-review" style="margin:0;">
+    <button type="submit" class="control-btn">Run the market review now</button>
+  </form>
+  {% endif %}
 </div>
 
 <div class="card">

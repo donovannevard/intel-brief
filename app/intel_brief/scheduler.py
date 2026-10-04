@@ -106,13 +106,39 @@ def run_markets_ingest():
         log.exception("outlet logo refresh failed")
 
 
-def run_pipeline_chain():
-    from intel_brief.markets.ingest import ingest as markets_ingest
-    from intel_brief.pipeline.analyze import analyze
-    from intel_brief.pipeline.comments import collect_comments
-    from intel_brief.pipeline.correlate import correlate
-    from intel_brief.pipeline.market_brief import generate_market_briefs
-    from intel_brief.pipeline.derive import assemble_morning_brief
+# Each stage is isolated. The stages communicate only through the database --
+# every one of them reads what it needs and writes what it produced -- so a
+# failure upstream means a later stage has less to work with, not that it
+# cannot run. Wrapping a whole chain in one try/except meant an unreachable
+# LLM endpoint also took out markets_ingest, which is pure HTTP and needs no
+# model at all.
+def _run_stages(label: str, stages: list) -> list[str]:
+    failures = []
+    for name, fn in stages:
+        try:
+            log.info("%s: %s", name, fn())
+        except Exception:
+            log.exception("stage failed: %s", name)
+            failures.append(name)
+    if failures:
+        log.warning("%s finished with %d failed stage(s): %s",
+                    label, len(failures), ", ".join(failures))
+    else:
+        log.info("%s finished, all stages ok", label)
+    return failures
+
+
+def run_collection():
+    """The daily job: gather the day's articles, and stop there.
+
+    Collection and analysis are split because they have completely different
+    costs. Discover and extract are network-bound, finish in minutes and must
+    happen every day or the day is lost for good -- RSS serves only what is
+    live now. Analysis is GPU-bound and took hours, which is a bad thing to
+    start unattended on a machine someone also uses. So the articles are
+    always there to read in the morning, unsorted, and analysis is asked for
+    when there is capacity for it (see run_analysis).
+    """
     from intel_brief.pipeline.discover import discover
     from intel_brief.pipeline.extract import extract
 
@@ -123,47 +149,60 @@ def run_pipeline_chain():
         )
         return
 
-    log.info("pipeline chain: discover -> extract -> analyze -> derive -> "
-             "markets_ingest -> market_brief -> correlate")
+    log.info("collection: discover -> extract")
+    _run_stages("collection", [("discover", discover), ("extract", extract)])
 
-    # Each stage is isolated. The stages communicate only through the database
-    # -- every one of them reads what it needs and writes what it produced --
-    # so a failure upstream means a later stage has less to work with, not that
-    # it cannot run. Wrapping the whole chain in one try/except meant an
-    # unreachable LLM endpoint also took out markets_ingest, which is pure
-    # HTTP and needs no model at all.
-    failures = []
 
-    def stage(name: str, fn):
-        try:
-            log.info("%s: %s", name, fn())
-        except Exception:
-            log.exception("stage failed: %s", name)
-            failures.append(name)
+def run_analysis():
+    """The on-demand job: read what has been collected and make sense of it.
 
-    stage("discover", discover)
-    stage("extract", extract)
-    stage("analyze", analyze)
-    stage("morning brief", assemble_morning_brief)
-    # After analysis, deliberately: the model forms its reading from the
-    # article alone, then human commentary is set beside it.
-    stage("comments", collect_comments)
-    # News is fully processed before markets, so the market stages below
-    # can read the day's finished analysis and embeddings.
-    stage("markets ingest", markets_ingest)
-    stage("market briefs", generate_market_briefs)
-    stage("news/market correlation", correlate)
+    Triggered from the Status page, never on a timer. analyze() picks what is
+    worth analysing and writes per-article summaries; derive folds the result
+    into the morning brief; comments sets human discussion beside the model's
+    reading, deliberately after it.
+    """
+    from intel_brief.pipeline.analyze import analyze
+    from intel_brief.pipeline.comments import collect_comments
+    from intel_brief.pipeline.derive import assemble_morning_brief
 
-    if failures:
-        log.warning("pipeline chain finished with %d failed stage(s): %s",
-                    len(failures), ", ".join(failures))
-    else:
-        log.info("pipeline chain finished, all stages ok")
+    log.info("analysis: analyze -> derive -> comments")
+    _run_stages("analysis", [
+        ("analyze", analyze),
+        ("morning brief", assemble_morning_brief),
+        ("comments", collect_comments),
+    ])
+
+
+def run_market_review():
+    """The weekly job: refresh prices, then describe the week.
+
+    Weekly rather than daily because a single day of price moves is mostly
+    noise to read about, while a week has a shape worth a paragraph -- and
+    the digest the model is given already reasons in 7-day terms. Prices
+    themselves still refresh every few hours; this is only the narrative.
+    """
+    from intel_brief.markets.ingest import ingest as markets_ingest
+    from intel_brief.pipeline.correlate import correlate
+    from intel_brief.pipeline.market_brief import generate_market_briefs
+
+    if not _wait_for_network():
+        log.warning("network unreachable -- skipping the weekly market review")
+        return
+
+    log.info("market review: markets_ingest -> market_brief -> correlate")
+    _run_stages("market review", [
+        ("markets ingest", markets_ingest),
+        ("market briefs", generate_market_briefs),
+        ("news/market correlation", correlate),
+    ])
 
 
 def _needs_catchup(pipeline_hour: int, pipeline_minute: int) -> bool:
     from intel_brief.db import get_connection
 
+    # Collection is what a missed day loses irrecoverably, so that -- not the
+    # brief, which can be produced from stored articles at any time -- is what
+    # catch-up checks for.
     now_local = datetime.now(ZoneInfo(settings.user_timezone))
     scheduled_today = now_local.replace(hour=pipeline_hour, minute=pipeline_minute, second=0, microsecond=0)
     if now_local < scheduled_today:
@@ -173,7 +212,7 @@ def _needs_catchup(pipeline_hour: int, pipeline_minute: int) -> bool:
     conn = get_connection()
     try:
         row = conn.execute(
-            "SELECT 1 FROM pipeline_runs WHERE stage = 'derive' AND ok = 1 AND finished_at >= ?",
+            "SELECT 1 FROM pipeline_runs WHERE stage = 'extract' AND ok = 1 AND finished_at >= ?",
             (today_utc,),
         ).fetchone()
     finally:
@@ -187,9 +226,19 @@ def build_scheduler() -> BackgroundScheduler:
     pipeline_hour, pipeline_minute = (int(x) for x in settings.pipeline_run_time.split(":"))
 
     scheduler.add_job(
-        run_pipeline_chain,
+        run_collection,
         CronTrigger(hour=pipeline_hour, minute=pipeline_minute),
         id="pipeline_chain",
+    )
+
+    review_hour, review_minute = (int(x) for x in settings.market_review_time.split(":"))
+    scheduler.add_job(
+        run_market_review,
+        CronTrigger(day_of_week=settings.market_review_day,
+                    hour=review_hour, minute=review_minute),
+        id="market_review",
+        coalesce=True,
+        max_instances=1,
     )
 
     # Prices refresh independently of the GPU-bound chain. `next_run_time=now`
@@ -208,9 +257,9 @@ def build_scheduler() -> BackgroundScheduler:
 
     if _needs_catchup(pipeline_hour, pipeline_minute):
         log.info(
-            "no successful brief today yet and PIPELINE_RUN_TIME (%s) has passed -- "
+            "nothing collected today yet and PIPELINE_RUN_TIME (%s) has passed -- "
             "catching up now instead of waiting for tomorrow", settings.pipeline_run_time,
         )
-        scheduler.add_job(run_pipeline_chain, id="pipeline_catchup")
+        scheduler.add_job(run_collection, id="pipeline_catchup")
 
     return scheduler

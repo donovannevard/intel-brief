@@ -48,29 +48,43 @@ conn.execute("DELETE FROM articles WHERE id > 900000"); conn.commit(); conn.clos
 
 # --- catch-up: today only, never a previous day ---
 TZ = ZoneInfo(settings.user_timezone)
-def set_derive(*stamps):
+# Catch-up keys off collection, not the brief: a day not collected is lost
+# for good, while a brief can be built from stored articles whenever asked.
+def set_collected(*stamps):
     c = get_connection()
-    c.execute("DELETE FROM pipeline_runs WHERE stage='derive'")
+    c.execute("DELETE FROM pipeline_runs WHERE stage='extract'")
     for ts in stamps:
-        c.execute("INSERT INTO pipeline_runs (stage, started_at, finished_at, ok) VALUES ('derive',?,?,1)", (ts, ts))
+        c.execute("INSERT INTO pipeline_runs (stage, started_at, finished_at, ok) VALUES ('extract',?,?,1)", (ts, ts))
     c.commit(); c.close()
 
 now_utc = datetime.now(timezone.utc)
-set_derive()
+set_collected()
 assert scheduler._needs_catchup(min(23, datetime.now(TZ).hour + 2), 0) is False
 print("6. before the scheduled time, catch-up leaves it to cron")
 assert scheduler._needs_catchup(0, 1) is True
 print("7. past the time with nothing done today -> fires")
-set_derive(now_utc.isoformat())
+set_collected(now_utc.isoformat())
 assert scheduler._needs_catchup(0, 1) is False
 print("8. today already succeeded -> does not fire")
-set_derive((now_utc - timedelta(days=1)).isoformat())
+set_collected((now_utc - timedelta(days=1)).isoformat())
 assert scheduler._needs_catchup(0, 1) is True
 print("9. yesterday ran, today hasn't -> fires for TODAY")
 import inspect
-chain = inspect.getsource(scheduler.run_pipeline_chain)
-assert "def run_pipeline_chain():" in chain and "date" not in chain.split("discover()")[0].split("def run_pipeline_chain")[1]
-print("10. the chain takes no date: a previous day is unreachable by design")
-c = get_connection(); c.execute("DELETE FROM pipeline_runs WHERE stage='derive'"); c.commit(); c.close()
+chain = inspect.getsource(scheduler.run_collection)
+assert "def run_collection():" in chain and "date" not in chain.split("discover")[1]
+print("10. collection takes no date: a previous day is unreachable by design")
+
+# The split is the point: the daily job must not drag in the GPU-bound
+# stages, and analysis must not quietly re-collect.
+assert "analyze" not in chain and "market" not in chain
+print("11. the daily job collects only -- no analyze, no market narrative")
+analysis = inspect.getsource(scheduler.run_analysis)
+assert "discover" not in analysis and "extract" not in analysis
+assert all(x in analysis for x in ("analyze", "assemble_morning_brief", "collect_comments"))
+print("12. analysis analyses only -- no collection")
+review = inspect.getsource(scheduler.run_market_review)
+assert "generate_market_briefs" in review and "correlate" in review
+print("13. the weekly review carries the market narrative")
+c = get_connection(); c.execute("DELETE FROM pipeline_runs WHERE stage='extract'"); c.commit(); c.close()
 
 print("\nALL CHECKS PASSED")

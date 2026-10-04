@@ -1,0 +1,30 @@
+{#
+  Date window for a list page. Presets are plain links and the custom range is
+  a plain GET form, so the window survives a reload, can be bookmarked and
+  needs no JavaScript -- the same reasoning as the outlet chips beside it.
+
+  Every link carries `selected_outlets`, and the outlet chips carry the window
+  through `extra_query`. Without both halves, changing one filter would
+  silently drop the other.
+#}
+{% if date_range is defined %}
+{% set outlet_q = ('outlets=' ~ (selected_outlets | join(',') | urlencode)) if selected_outlets else '' %}
+{% set search_q = ('q=' ~ (query | urlencode)) if query is defined and query else '' %}
+{% set carry = [search_q, outlet_q] | select | join('&') %}
+<div class="outlet-filter range-presets">
+  <span class="outlet-filter-label">Showing</span>
+  {% for key, label in range_labels %}
+    <a class="outlet-chip{{ ' on' if date_range.key == key }}"
+       href="{{ request.url.path }}?range={{ key }}{{ ('&' ~ carry) if carry else '' }}">{{ label }}</a>
+  {% endfor %}
+  <form method="get" action="{{ request.url.path }}" class="range-filter" style="margin:0;display:inline-flex;">
+    <input type="hidden" name="range" value="custom">
+    {% if query is defined and query %}<input type="hidden" name="q" value="{{ query }}">{% endif %}
+    {% if selected_outlets %}<input type="hidden" name="outlets" value="{{ selected_outlets | join(',') }}">{% endif %}
+    <input type="date" name="from" value="{{ date_range.start }}" aria-label="From">
+    <span style="color:var(--muted);">to</span>
+    <input type="date" name="to" value="{{ date_range.end }}" aria-label="To">
+    <button type="submit" class="control-btn" style="padding:4px 10px;">Apply</button>
+  </form>
+</div>
+{% endif %}

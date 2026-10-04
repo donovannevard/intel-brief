@@ -362,8 +362,14 @@ def get_logo(outlet: str) -> tuple[bytes, str] | None:
 
 
 def outlets_with_logos() -> list[dict]:
-    """Every outlet that has published an analysed article, with whether a
-    logo is available -- the input to the filter row."""
+    """Every outlet with a readable article, and whether a logo is available
+    -- the input to the filter row.
+
+    Readable, not analysed: analysis is an on-demand job, so a day collected
+    this morning is listed in the news tabs long before anything has analysed
+    it. Keyed on 'analyzed' alone, the filter row would be empty beside a full
+    page of articles, and parse_outlets() -- which validates against this list
+    -- would reject the very outlets on screen."""
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -372,7 +378,7 @@ def outlets_with_logos() -> list[dict]:
                       (SELECT 1 FROM outlet_logos l
                         WHERE l.outlet = a.outlet AND l.image IS NOT NULL) AS has_logo
                  FROM articles a
-                WHERE a.status = 'analyzed' AND a.outlet IS NOT NULL
+                WHERE a.status IN ('analyzed', 'extracted', 'stale') AND a.outlet IS NOT NULL
                 GROUP BY a.outlet
                 ORDER BY n DESC"""
         ).fetchall()

@@ -6,7 +6,7 @@
   <input type="text" name="q" value="{{ query or '' }}" placeholder="Search all articles..." style="width: 420px; max-width: 100%; padding: 7px 10px; font-size: 13px; background: var(--light); border: 1px solid var(--border); border-radius: 4px; color: var(--text);">
   <button type="submit" class="control-btn" style="padding: 7px 14px;">Search</button>
 </form>
-{% set extra_query = ("q=" ~ (query | urlencode)) if query else "" %}
+{% include "_range_filter.html" %}
 {% include "_outlet_filter.html" %}
 {% if query %}
   <p style="color: var(--muted);">{{ articles|length }} result(s) for "{{ query }}"</p>

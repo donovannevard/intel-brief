@@ -3,8 +3,10 @@ what the pipeline stages have already written (spec's core principle)."""
 
 import json
 import logging
+import re
 import threading
-from datetime import datetime, timezone
+from urllib.parse import quote_plus
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -223,6 +225,72 @@ templates.env.globals["markets_periods"] = lambda: list(markets_registry.PERIOD_
 # without one (Hacker News items, feeds with no date).
 NEWEST_FIRST = " ORDER BY COALESCE(a.published_ts, a.discovered_at) DESC"
 
+# How far back the Status page looks by default.
+STATUS_WINDOW_DAYS = 30
+
+# --- date window for the list views ----------------------------------------
+# Published time where the feed gave one, discovery time otherwise, so an
+# article without a timestamp still lands on the day it was collected rather
+# than vanishing from every window.
+ARTICLE_DATE_SQL = "date(COALESCE(a.published_ts, a.discovered_at))"
+
+# Presets, in days back from today inclusive. "today" is the default because
+# that is the normal use -- this morning's news -- while the longer windows
+# are for catching up after a few days away.
+RANGE_PRESETS = {"today": 1, "7d": 7, "30d": 30}
+RANGE_LABELS = [("today", "Today"), ("7d", "7 days"), ("30d", "30 days"), ("all", "All")]
+DEFAULT_RANGE = "today"
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def parse_range(key: str = "", frm: str = "", to: str = "") -> dict:
+    """Resolve the window from the query string, always to something valid.
+
+    Anything unrecognised falls back to the default rather than erroring: a
+    URL is shareable and hand-editable, and a typo in it should show today's
+    news, not a stack trace.
+    """
+    today = datetime.now(timezone.utc).date()
+    key = (key or DEFAULT_RANGE).strip().lower()
+
+    if key == "custom":
+        start = frm if _ISO_DATE.match(frm or "") else ""
+        end = to if _ISO_DATE.match(to or "") else today.isoformat()
+        if start and end and start > end:
+            start, end = end, start
+        return {"key": "custom", "start": start, "end": end}
+    if key == "all":
+        return {"key": "all", "start": "", "end": ""}
+    if key not in RANGE_PRESETS:
+        key = DEFAULT_RANGE
+    start = (today - timedelta(days=RANGE_PRESETS[key] - 1)).isoformat()
+    return {"key": key, "start": start, "end": today.isoformat()}
+
+
+def range_clause(rng: dict) -> tuple[str, tuple]:
+    clause, params = "", []
+    if rng.get("start"):
+        clause += f" AND {ARTICLE_DATE_SQL} >= ?"
+        params.append(rng["start"])
+    if rng.get("end"):
+        clause += f" AND {ARTICLE_DATE_SQL} <= ?"
+        params.append(rng["end"])
+    return clause, tuple(params)
+
+
+def range_query(rng: dict) -> str:
+    """The window as query-string fragment, so the outlet chips carry it."""
+    if rng["key"] == "all":
+        return "range=all"
+    if rng["key"] == "custom":
+        parts = ["range=custom"]
+        if rng["start"]:
+            parts.append(f"from={rng['start']}")
+        if rng["end"]:
+            parts.append(f"to={rng['end']}")
+        return "&".join(parts)
+    return f"range={rng['key']}"
+
 # LEFT JOIN, not JOIN: without a model there are no article_analysis rows, and
 # an inner join left every news tab completely empty rather than degraded.
 # _article_card.html is already fully conditional -- importance, scope,
@@ -241,7 +309,12 @@ _ARTICLE_SELECT = """
 # analysed articles a day out of ~400 collected. Dropping the status filter
 # outright would bury those 40 in 400 bare headlines, so the filter follows the
 # mode rather than being removed.
-_WHERE_ANALYZED = " WHERE a.status = 'analyzed'"
+# Everything collected is readable, analysed or not. Analysis is a separate,
+# on-demand job now (scheduler.run_analysis), so gating the list views on
+# status='analyzed' would have left a morning's collection invisible until
+# someone found time to process it -- which is exactly backwards. The card
+# template is fully conditional, so an unanalysed article renders as its
+# headline and outlet, and gains its summary and framing later.
 _WHERE_READABLE = " WHERE a.status IN ('analyzed', 'extracted', 'stale')"
 
 # Bounded slice of the article body, used for place-name scope matching.
@@ -249,15 +322,13 @@ GEO_BODY_SQL = "COALESCE(substr(a.full_text, 1, 4000), an.summary, '')"
 
 
 def article_query(extra_cols: str = "") -> str:
-    """The base article query for the current AI mode.
+    """The base article query.
 
     `extra_cols` is appended to the SELECT list (leading comma included by the
     caller) so a query that genuinely needs the article body can ask for it
     without every list view paying to carry full text it never renders.
     """
-    return _ARTICLE_SELECT.format(extra=extra_cols) + (
-        _WHERE_ANALYZED if ai.mode() == ai.MODE_ENABLED else _WHERE_READABLE
-    )
+    return _ARTICLE_SELECT.format(extra=extra_cols) + _WHERE_READABLE
 
 
 def with_comments(articles: list[dict]) -> dict:
@@ -290,7 +361,8 @@ def outlet_clause(selected: list[str]) -> tuple[str, tuple]:
     return f" AND a.outlet IN ({placeholders})", tuple(selected)
 
 
-def fetch_by_scope(scope: str, selected_outlets: list[str], limit: int = 40) -> list[dict]:
+def fetch_by_scope(scope: str, selected_outlets: list[str], limit: int = 40,
+                   rng: dict | None = None) -> list[dict]:
     """Articles for the Local / Country / Global tabs.
 
     Scope comes from place names in the text (see geo.py), not from the
@@ -305,14 +377,15 @@ def fetch_by_scope(scope: str, selected_outlets: list[str], limit: int = 40) -> 
     # through a list view.
     clause, params = geo.sql_prefilter(scope, ("a.title", GEO_BODY_SQL))
     outlet_clause_sql, outlet_params = outlet_clause(selected_outlets)
+    date_sql, date_params = range_clause(rng or {})
     conn = get_connection()
     try:
         # Over-fetch: the SQL clause is a loose prefilter and the precise
         # check happens below, so ask for more rows than we intend to show.
         rows = conn.execute(
             article_query(f", {GEO_BODY_SQL} AS geo_body")
-            + clause + outlet_clause_sql + NEWEST_FIRST + " LIMIT ?",
-            params + outlet_params + (limit * 6,),
+            + clause + outlet_clause_sql + date_sql + NEWEST_FIRST + " LIMIT ?",
+            params + outlet_params + date_params + (limit * 6,),
         ).fetchall()
     finally:
         conn.close()
@@ -340,11 +413,28 @@ def fetch_articles(where_extra: str = "", params: tuple = (), limit: int = 40) -
 
 
 @app.get("/", response_class=HTMLResponse)
-def today(request: Request, outlets_param: str = Query("", alias="outlets")):
+def today(request: Request, outlets_param: str = Query("", alias="outlets"),
+          range_key: str = Query("", alias="range"),
+          frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
+    rng = parse_range(range_key, frm, to)
+    date_sql, date_params = range_clause(rng)
     conn = get_connection()
     try:
+        # The newest brief inside the window. Analysis is on demand now, so
+        # "today" may well have no brief yet -- in which case the fallback
+        # below lists what has been collected, which is the honest answer
+        # rather than silently showing an older day's brief as if it were
+        # this one.
+        brief_sql = "SELECT * FROM daily_briefs WHERE period = 'morning'"
+        brief_params: tuple = ()
+        if rng["start"]:
+            brief_sql += " AND date >= ?"
+            brief_params += (rng["start"],)
+        if rng["end"]:
+            brief_sql += " AND date <= ?"
+            brief_params += (rng["end"],)
         brief_row = conn.execute(
-            "SELECT * FROM daily_briefs WHERE period = 'morning' ORDER BY date DESC LIMIT 1"
+            brief_sql + " ORDER BY date DESC LIMIT 1", brief_params
         ).fetchone()
 
         # While a pipeline is actively running, surface articles as they're
@@ -391,6 +481,7 @@ def today(request: Request, outlets_param: str = Query("", alias="outlets")):
                 "section": "news", "active": "today", "brief_date": brief_row["date"], "stories": stories,
                 "learn_today": learn_today, "just_analyzed": just_analyzed,
                 "comments": with_comments(just_analyzed),
+                "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
                 "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected,
             },
         )
@@ -400,12 +491,13 @@ def today(request: Request, outlets_param: str = Query("", alias="outlets")):
     # already reflects live analyze() progress, since fetch_articles() reads
     # whatever's currently status='analyzed', committed per-article.
     clause, oparams = outlet_clause(selected)
-    articles = fetch_articles(clause, oparams, limit=20)
+    articles = fetch_articles(clause + date_sql, oparams + date_params, limit=40)
     return templates.TemplateResponse(
         request, "article_list.html",
         {"section": "news", "active": "today",
-         "page_title": "Today (top stories, all scopes) -- brief not yet assembled",
+         "page_title": "Collected articles — no brief for this window yet",
          "articles": articles, "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
@@ -439,100 +531,131 @@ def resume_pipeline(request: Request):
 
 
 @app.get("/local", response_class=HTMLResponse)
-def local(request: Request, outlets_param: str = Query("", alias="outlets")):
+def local(request: Request, outlets_param: str = Query("", alias="outlets"),
+          range_key: str = Query("", alias="range"),
+          frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     selected = parse_outlets(outlets_param)
-    articles = fetch_by_scope("local", selected)
+    rng = parse_range(range_key, frm, to)
+    articles = fetch_by_scope("local", selected, rng=rng)
     return templates.TemplateResponse(
         request, "article_list.html",
         {"section": "news", "active": "local", "page_title": "Local", "articles": articles,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
 
 @app.get("/country", response_class=HTMLResponse)
-def country(request: Request, outlets_param: str = Query("", alias="outlets")):
+def country(request: Request, outlets_param: str = Query("", alias="outlets"),
+          range_key: str = Query("", alias="range"),
+          frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     selected = parse_outlets(outlets_param)
-    articles = fetch_by_scope("country", selected)
+    rng = parse_range(range_key, frm, to)
+    articles = fetch_by_scope("country", selected, rng=rng)
     return templates.TemplateResponse(
         request, "article_list.html",
         {"section": "news", "active": "country", "page_title": "Country", "articles": articles,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
 
 @app.get("/global", response_class=HTMLResponse)
-def global_(request: Request, outlets_param: str = Query("", alias="outlets")):
+def global_(request: Request, outlets_param: str = Query("", alias="outlets"),
+          range_key: str = Query("", alias="range"),
+          frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     selected = parse_outlets(outlets_param)
-    articles = fetch_by_scope("global", selected)
+    rng = parse_range(range_key, frm, to)
+    articles = fetch_by_scope("global", selected, rng=rng)
     return templates.TemplateResponse(
         request, "article_list.html",
         {"section": "news", "active": "global", "page_title": "Global", "articles": articles,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
 
 @app.get("/economics", response_class=HTMLResponse)
-def economics(request: Request, outlets_param: str = Query("", alias="outlets")):
+def economics(request: Request, outlets_param: str = Query("", alias="outlets"),
+          range_key: str = Query("", alias="range"),
+          frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     selected = parse_outlets(outlets_param)
     clause, oparams = outlet_clause(selected)
+    rng = parse_range(range_key, frm, to)
+    date_sql, date_params = range_clause(rng)
     articles = fetch_articles(
-        " AND EXISTS (SELECT 1 FROM json_each(an.categories) WHERE value = ?)" + clause,
-        ("economics",) + oparams,
+        " AND EXISTS (SELECT 1 FROM json_each(an.categories) WHERE value = ?)" + clause + date_sql,
+        ("economics",) + oparams + date_params,
     )
     return templates.TemplateResponse(
         request, "article_list.html",
         {"section": "news", "needs_ai": True, "active": "economics", "page_title": "Economics", "articles": articles,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
 
 @app.get("/corporate", response_class=HTMLResponse)
-def corporate(request: Request, outlets_param: str = Query("", alias="outlets")):
+def corporate(request: Request, outlets_param: str = Query("", alias="outlets"),
+          range_key: str = Query("", alias="range"),
+          frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     selected = parse_outlets(outlets_param)
     clause, oparams = outlet_clause(selected)
+    rng = parse_range(range_key, frm, to)
+    date_sql, date_params = range_clause(rng)
     articles = fetch_articles(
-        " AND EXISTS (SELECT 1 FROM json_each(an.categories) WHERE value = ?)" + clause,
-        ("corporate",) + oparams,
+        " AND EXISTS (SELECT 1 FROM json_each(an.categories) WHERE value = ?)" + clause + date_sql,
+        ("corporate",) + oparams + date_params,
     )
     return templates.TemplateResponse(
         request, "article_list.html",
         {"section": "news", "needs_ai": True, "active": "corporate", "page_title": "Corporate", "articles": articles,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
 
 @app.get("/crypto", response_class=HTMLResponse)
-def crypto(request: Request, outlets_param: str = Query("", alias="outlets")):
+def crypto(request: Request, outlets_param: str = Query("", alias="outlets"),
+          range_key: str = Query("", alias="range"),
+          frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     selected = parse_outlets(outlets_param)
     clause, oparams = outlet_clause(selected)
+    rng = parse_range(range_key, frm, to)
+    date_sql, date_params = range_clause(rng)
     articles = fetch_articles(
-        " AND EXISTS (SELECT 1 FROM json_each(an.categories) WHERE value = ?)" + clause,
-        ("bitcoin",) + oparams,
+        " AND EXISTS (SELECT 1 FROM json_each(an.categories) WHERE value = ?)" + clause + date_sql,
+        ("bitcoin",) + oparams + date_params,
     )
     return templates.TemplateResponse(
         request, "article_list.html",
         {"section": "news", "needs_ai": True, "active": "crypto", "page_title": "Crypto / Bitcoin", "articles": articles,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
 
 @app.get("/science", response_class=HTMLResponse)
-def science(request: Request, outlets_param: str = Query("", alias="outlets")):
+def science(request: Request, outlets_param: str = Query("", alias="outlets"),
+            range_key: str = Query("", alias="range"),
+            frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     conn = get_connection()
+    rng = parse_range(range_key, frm, to)
     try:
         selected = parse_outlets(outlets_param)
         clause, oparams = outlet_clause(selected)
+        date_sql, date_params = range_clause(rng)
         query = (article_query()
                  + " AND EXISTS (SELECT 1 FROM json_each(an.categories) WHERE value LIKE 'science%')"
-                 + clause
+                 + clause + date_sql
                  + NEWEST_FIRST + " LIMIT ?")
-        rows = conn.execute(query, oparams + (40,)).fetchall()
+        rows = conn.execute(query, oparams + date_params + (40,)).fetchall()
         articles = [_row_to_dict(r) for r in rows]
     finally:
         conn.close()
@@ -540,14 +663,23 @@ def science(request: Request, outlets_param: str = Query("", alias="outlets")):
         request, "article_list.html",
         {"section": "news", "needs_ai": True, "active": "science", "page_title": "Science & Maths", "articles": articles,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS, "extra_query": range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected},
     )
 
 
 @app.get("/archive", response_class=HTMLResponse)
-def archive(request: Request, q: str = "", outlets_param: str = Query("", alias="outlets")):
+def archive(request: Request, q: str = "", outlets_param: str = Query("", alias="outlets"),
+            range_key: str = Query("", alias="range"),
+            frm: str = Query("", alias="from"), to: str = Query("", alias="to")):
     selected = parse_outlets(outlets_param)
     clause, oparams = outlet_clause(selected)
+    # The archive defaults to everything, unlike the news tabs: searching an
+    # archive means searching all of it, and a window that silently hid
+    # yesterday's match would be worse than useless. The same presets narrow
+    # it when you know roughly when something was.
+    rng = parse_range(range_key or "all", frm, to)
+    date_sql, date_params = range_clause(rng)
     conn = get_connection()
     try:
         if q:
@@ -558,8 +690,8 @@ def archive(request: Request, q: str = "", outlets_param: str = Query("", alias=
                    FROM articles_fts f
                    JOIN articles a ON a.id = f.rowid
                    LEFT JOIN article_analysis an ON an.article_id = a.id
-                   WHERE articles_fts MATCH ?""" + clause + NEWEST_FIRST + " LIMIT 40",
-                (q,) + oparams,
+                   WHERE articles_fts MATCH ?""" + clause + date_sql + NEWEST_FIRST + " LIMIT 40",
+                (q,) + oparams + date_params,
             ).fetchall()
         else:
             rows = conn.execute(
@@ -568,8 +700,8 @@ def archive(request: Request, q: str = "", outlets_param: str = Query("", alias=
                           an.categories, an.importance_score
                    FROM articles a
                    LEFT JOIN article_analysis an ON an.article_id = a.id
-                   WHERE 1=1""" + clause + NEWEST_FIRST + " LIMIT 40",
-                oparams,
+                   WHERE 1=1""" + clause + date_sql + NEWEST_FIRST + " LIMIT 40",
+                oparams + date_params,
             ).fetchall()
         articles = [_row_to_dict(r) for r in rows]
     finally:
@@ -577,6 +709,8 @@ def archive(request: Request, q: str = "", outlets_param: str = Query("", alias=
     return templates.TemplateResponse(
         request, "archive.html", {"section": "news", "active": "archive", "articles": articles, "query": q,
          "comments": with_comments(articles),
+         "date_range": rng, "range_labels": RANGE_LABELS,
+         "extra_query": ("q=" + quote_plus(q) + "&" if q else "") + range_query(rng),
          "outlet_options": outlets.outlets_with_logos(), "selected_outlets": selected}
     )
 
@@ -702,23 +836,46 @@ def markets_tab(tab_id: str, period: str = Query(markets_registry.DEFAULT_PERIOD
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@app.post("/control/run-now", response_class=HTMLResponse)
-def run_pipeline_now(request: Request):
-    """Run today's chain on demand.
+def _start_job(fn, name: str):
+    """Run one of the scheduler's jobs in the background, if nothing else is.
 
-    The startup catch-up already covers a missed 05:30 on the same day, so
-    this is for the cases it can't: the run failed, or it was paused through,
-    or you want today's brief refreshed after adding a feed.
+    One at a time, deliberately: these stages share the database and the GPU,
+    and the Status page has one progress banner to report through.
     """
     global _backfill_thread
     if _backfill_running() or get_pipeline_progress()["running"]:
         return RedirectResponse("/status", status_code=303)
-
-    from intel_brief.scheduler import run_pipeline_chain
-
-    _backfill_thread = threading.Thread(target=run_pipeline_chain, daemon=True, name="run-now")
+    _backfill_thread = threading.Thread(target=fn, daemon=True, name=name)
     _backfill_thread.start()
     return RedirectResponse("/status", status_code=303)
+
+
+@app.post("/control/run-now", response_class=HTMLResponse)
+def run_collection_now(request: Request):
+    """Collect today's articles on demand.
+
+    The startup catch-up already covers a missed PIPELINE_RUN_TIME on the same
+    day, so this is for the cases it can't: the run failed, or you want to
+    pick up a feed you have just added.
+    """
+    from intel_brief.scheduler import run_collection
+    return _start_job(run_collection, "collect-now")
+
+
+@app.post("/control/analyze", response_class=HTMLResponse)
+def run_analysis_now(request: Request):
+    """Analyse what has been collected: the GPU-bound half, asked for rather
+    than scheduled. Runs analyze, then the morning brief, then comments."""
+    from intel_brief.scheduler import run_analysis
+    return _start_job(run_analysis, "analyze-now")
+
+
+@app.post("/control/market-review", response_class=HTMLResponse)
+def run_market_review_now(request: Request):
+    """The weekly market narrative, on demand -- for a week the machine was
+    off on the scheduled day, or to see the effect of a registry change."""
+    from intel_brief.scheduler import run_market_review
+    return _start_job(run_market_review, "market-review-now")
 
 
 @app.get("/outlet-logo/{outlet}")
@@ -739,6 +896,15 @@ def outlet_logo(outlet: str):
 
 @app.get("/status", response_class=HTMLResponse)
 def status(request: Request, start: str = Query(""), end: str = Query(""), day: str = Query("")):
+    # Default to the last 30 days rather than the whole archive. The coverage
+    # chart is one bar per day, so a year of them is unreadable, and a gap old
+    # enough to be off this window is one nothing can be done about anyway --
+    # collection reads live feeds, which keep no history.
+    if not start:
+        start = max(
+            (datetime.now(timezone.utc).date() - timedelta(days=STATUS_WINDOW_DAYS - 1)).isoformat(),
+            backfill_mod.archive_start(),
+        )
     conn = get_connection()
     try:
         run_rows = conn.execute(
@@ -757,6 +923,23 @@ def status(request: Request, start: str = Query(""), end: str = Query(""), day: 
         status_counts = [dict(r) for r in conn.execute(
             "SELECT status, COUNT(*) as n FROM articles GROUP BY status"
         ).fetchall()]
+
+        # Analysis is on demand, so the Status page has to say how much is
+        # waiting -- otherwise the only way to notice a growing backlog is
+        # that the briefs stopped appearing.
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM articles WHERE status = 'extracted'"
+        ).fetchone()[0]
+        last_analysis = conn.execute(
+            """SELECT finished_at, ok FROM pipeline_runs
+                WHERE stage = 'analyze' AND finished_at IS NOT NULL
+                ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        last_review = conn.execute(
+            """SELECT finished_at, ok FROM pipeline_runs
+                WHERE stage = 'market_brief' AND finished_at IS NOT NULL
+                ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
     finally:
         conn.close()
 
@@ -797,6 +980,10 @@ def status(request: Request, start: str = Query(""), end: str = Query(""), day: 
             "selected_day": selected,
             "todays_run": todays_run(),
             "scheduled_time": settings.pipeline_run_time,
+            "pending_analysis": pending,
+            "last_analysis": dict(last_analysis) if last_analysis else None,
+            "last_review": dict(last_review) if last_review else None,
+            "review_schedule": f"{settings.market_review_day.capitalize()} {settings.market_review_time}",
             "backfill_running": _backfill_running(),
             "pipeline_running": get_pipeline_progress()["running"],
         },
@@ -804,7 +991,7 @@ def status(request: Request, start: str = Query(""), end: str = Query(""), day: 
 
 
 def todays_run() -> dict:
-    """Whether today's chain has completed, for the Status panel.
+    """Whether today's *collection* has completed, for the Status panel.
 
     Catch-up only ever covers *today* -- a missed previous day is gone,
     because discover() reads what the feeds serve now and RSS keeps no
@@ -815,7 +1002,7 @@ def todays_run() -> dict:
     try:
         row = conn.execute(
             """SELECT finished_at FROM pipeline_runs
-                WHERE stage = 'derive' AND ok = 1 AND finished_at >= ?
+                WHERE stage = 'extract' AND ok = 1 AND finished_at >= ?
                 ORDER BY finished_at DESC LIMIT 1""",
             (today,),
         ).fetchone()

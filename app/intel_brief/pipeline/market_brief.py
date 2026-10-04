@@ -70,9 +70,9 @@ What to talk about
 - `cumulative_series: true` means the level only ever goes up (a running total). Never call its level a record or a high.
 
 Continuity
-- Where an instrument has a `previously` block, that is what the digest said on that earlier date. Use it to say whether a move is continuing, accelerating or reversing: "BTC/USD is up 7.5% over 7 days, against 7.25% in yesterday's note" is worth writing; repeating today's figure alone is not.
-- Only compare against figures in `previously`. Do not describe a trend across days the digest doesn't cover.
-- If nothing has meaningfully changed since the previous note, say that plainly. "Little has moved since yesterday" is a useful sentence.
+- Where an instrument has a `previously` block, that is what the digest said on the date in its `as_of`. Use it to say whether a move is continuing, accelerating or reversing: "BTC/USD is up 7.5% over 7 days, against 7.25% in the previous note" is worth writing; repeating this week's figure alone is not.
+- Only compare against figures in `previously`, and name the period as the dates give it. These notes are written weekly, so the previous one is usually a week old -- never write "yesterday" or "today" unless `as_of` actually says so.
+- If nothing has meaningfully changed since the previous note, say that plainly. "Little has moved since the last note" is a useful sentence.
 
 The "watch" list
 - Each entry names something that could happen next and what would show it. Good: "whether wheat follows corn higher, which would point at weather rather than a single-crop story". Bad: "7-day changes in mempool count" -- that is a metric, not something to watch.
@@ -237,10 +237,11 @@ def previous_digest(conn, tab_id: str, before: str) -> dict[str, dict]:
     """Yesterday's (or the most recent earlier) digest for this tab, keyed by
     instrument.
 
-    This is what lets a note say "7.5% over 7 days now, against 7.25%
-    yesterday" instead of restating today's number as though nothing came
+    This is what lets a note say "7.5% over 7 days now, against 7.25% in the
+    previous note" instead of restating the figure as though nothing came
     before it. Reads the stored digest rather than recomputing, so the
-    comparison is against exactly what was published that day.
+    comparison is against exactly what was published then. Notes are written
+    weekly, so "the previous one" is normally last week's.
     """
     row = conn.execute(
         """SELECT date, movers FROM market_briefs
@@ -257,9 +258,9 @@ def previous_digest(conn, tab_id: str, before: str) -> dict[str, dict]:
 
 
 def with_previous(entries: list[dict], previous: dict[str, dict]) -> list[dict]:
-    """Attach yesterday's figures to today's, where the instrument appeared in
-    both. Only the fields worth comparing -- handing the model the whole prior
-    digest would double the prompt for no gain."""
+    """Attach the previous note's figures to this one's, where the instrument
+    appeared in both. Only the fields worth comparing -- handing the model the
+    whole prior digest would double the prompt for no gain."""
     out = []
     for entry in entries:
         prior = previous.get(entry["id"])
@@ -357,7 +358,7 @@ def recent_briefs(tab_id: str, days: int = 7) -> list[dict]:
 
     Kept as an archive rather than overwritten because a market note is only
     useful next to the one before it -- "still climbing" means nothing without
-    yesterday to compare against.
+    the previous note to compare against.
     """
     conn = get_connection()
     try:
